@@ -1,0 +1,9 @@
+{
+  "name": "studio-runner",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Voice-to-memo listener for music production sessions. Transcribes speech via whisper-cpp, captures screenshots, and writes a running DAW session memo.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
