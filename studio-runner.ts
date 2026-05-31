@@ -28,6 +28,7 @@ import { join } from "node:path";
 export const PROJECT_ROOT = process.env.STUDIO_PROJECT_ROOT || process.cwd();
 export const MEMO_DIR = join(PROJECT_ROOT, "memos");
 export const SCREENSHOTS_DIR = join(MEMO_DIR, "screenshots");
+export const AUDIO_DIR = join(MEMO_DIR, "audio");
 const SILENCE_GAP = 3; // seconds of silence to end an utterance
 const MAX_UTTERANCE_CHUNKS = 30; // hard cap: kill recording after 30s of continuous speech
 const MIC_GAIN_DB = parseInt(process.env.STUDIO_MIC_GAIN || "25", 10);
@@ -37,10 +38,15 @@ export const WHISPER_MODEL =
   "/opt/homebrew/share/whisper-cpp/models/ggml-large-v3-turbo-q5_0.bin";
 export const WHISPER_LANG = process.env.WHISPER_LANG || "en";
 
+// DAW audio capture (CD quality, recorded from a virtual loopback device).
+// Set STUDIO_DAW_DEVICE="" to disable DAW capture.
+const DAW_DEVICE = process.env.STUDIO_DAW_DEVICE ?? "BlackHole 2ch";
+const DAW_PREROLL_SEC = parseInt(process.env.STUDIO_DAW_PREROLL || "10", 10);
+const DAW_ROLLING_PATH = "/tmp/studio-runner-daw-rolling.wav";
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-export function ts(): string {
-  const d = new Date();
+export function ts(d: Date = new Date()): string {
   return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
@@ -60,6 +66,7 @@ export function ensureDir(dir: string): void {
 export function ensureMemo(): string {
   ensureDir(MEMO_DIR);
   ensureDir(SCREENSHOTS_DIR);
+  ensureDir(AUDIO_DIR);
   const mf = memoFile();
   if (!existsSync(mf)) {
     appendFileSync(mf, `# Session Memo — ${dateStr()}\n\n`);
@@ -71,8 +78,10 @@ export function appendToMemo(
   timestamp: string,
   text: string,
   screenshotRelPath: string,
+  dawAudioRelPath?: string,
 ): void {
-  const entry = `\n## ${timestamp}\n\n![screenshot](${screenshotRelPath})\n\n**Gianfranco:** ${text}\n\n---\n`;
+  const audioLine = dawAudioRelPath ? `\n[DAW audio](${dawAudioRelPath})\n` : "";
+  const entry = `\n## ${timestamp}\n\n![screenshot](${screenshotRelPath})\n${audioLine}\n**Gianfranco:** ${text}\n\n---\n`;
   appendFileSync(memoFile(), entry);
 }
 
@@ -89,12 +98,128 @@ export async function takeScreenshot(fp: string): Promise<void> {
   await $`screencapture -x "${fp}"`.quiet();
 }
 
+export async function getAudioDuration(fp: string): Promise<number> {
+  try {
+    const r = await $`soxi -D "${fp}"`.quiet();
+    return parseFloat(r.stdout.toString().trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// ── DAW capture ──────────────────────────────────────────────────────────
+// A second sox process records DAW output from a virtual loopback device
+// (BlackHole 2ch by default) at CD quality into a rolling temp file. After
+// each utterance we extract the relevant time window and then reset the
+// rolling file, so disk usage stays bounded to "time since last utterance".
+
+let dawProc: ReturnType<typeof Bun.spawn> | null = null;
+let dawRecordingStartMs = 0;
+let dawAvailable = false;
+let dawWarningLogged = false;
+
+function spawnDawSox(): ReturnType<typeof Bun.spawn> {
+  return Bun.spawn(
+    [
+      "sox",
+      "-t", "coreaudio", DAW_DEVICE,
+      "-r", "44100", "-c", "2", "-b", "16",
+      DAW_ROLLING_PATH,
+    ],
+    { stderr: "ignore" },
+  );
+}
+
+export function startDawRecorder(): void {
+  if (!DAW_DEVICE) return;
+  try {
+    unlinkSync(DAW_ROLLING_PATH);
+  } catch { /* ok */ }
+  try {
+    dawProc = spawnDawSox();
+  } catch (err) {
+    if (!dawWarningLogged) {
+      console.error(`DAW capture unavailable (sox spawn failed: ${err}) — continuing mic-only`);
+      dawWarningLogged = true;
+    }
+    dawProc = null;
+    dawAvailable = false;
+    return;
+  }
+  dawRecordingStartMs = Date.now();
+  dawAvailable = true;
+
+  // Watchdog: if sox dies within 1s, the device probably isn't present.
+  setTimeout(() => {
+    if (dawProc && dawProc.exitCode !== null) {
+      if (!dawWarningLogged) {
+        console.error(
+          `DAW capture unavailable (device '${DAW_DEVICE}' not found) — continuing mic-only`,
+        );
+        dawWarningLogged = true;
+      }
+      dawProc = null;
+      dawAvailable = false;
+    }
+  }, 1000);
+}
+
+export function stopDawRecorder(): void {
+  dawProc?.kill();
+  dawProc = null;
+  dawAvailable = false;
+  try { unlinkSync(DAW_ROLLING_PATH); } catch { /* ok */ }
+}
+
+async function resetDawRecorder(): Promise<void> {
+  if (!DAW_DEVICE) return;
+  const wasAvailable = dawAvailable;
+  if (dawProc) {
+    dawProc.kill();
+    try { await dawProc.exited; } catch { /* ok */ }
+    dawProc = null;
+  }
+  try { unlinkSync(DAW_ROLLING_PATH); } catch { /* ok */ }
+  if (wasAvailable) {
+    try {
+      dawProc = spawnDawSox();
+      dawRecordingStartMs = Date.now();
+      dawAvailable = true;
+    } catch {
+      dawAvailable = false;
+    }
+  }
+}
+
+export async function extractDawClip(
+  utteranceStartMs: number,
+  utteranceEndMs: number,
+  outPath: string,
+): Promise<boolean> {
+  if (!dawAvailable || !existsSync(DAW_ROLLING_PATH)) return false;
+
+  const windowStartMs = utteranceStartMs - DAW_PREROLL_SEC * 1000;
+  const startOffsetSec = Math.max(0, (windowStartMs - dawRecordingStartMs) / 1000);
+  const effectiveStartMs = Math.max(windowStartMs, dawRecordingStartMs);
+  const durationSec = (utteranceEndMs - effectiveStartMs) / 1000;
+  if (durationSec <= 0) return false;
+
+  try {
+    await $`sox "${DAW_ROLLING_PATH}" "${outPath}" trim ${startOffsetSec} ${durationSec}`.quiet();
+    return existsSync(outPath);
+  } catch (err) {
+    console.error("DAW clip extraction failed:", err);
+    return false;
+  }
+}
+
 // ── Entry ────────────────────────────────────────────────────────────────
 
 export interface Entry {
   timestamp: string;
   text: string;
   screenshotRelPath: string;
+  dawAudioRelPath?: string;
 }
 
 // ── Listener loop ────────────────────────────────────────────────────────
@@ -113,12 +238,14 @@ export function isListening(): boolean {
 export function startListening(onEntry?: (entry: Entry) => void): void {
   if (listening) return;
   listening = true;
+  startDawRecorder();
   listenerLoop(onEntry);
 }
 
 export function stopListening(): void {
   listening = false;
   currentSoxProc?.kill();
+  stopDawRecorder();
 }
 
 async function listenerLoop(onEntry?: (entry: Entry) => void): Promise<void> {
@@ -142,6 +269,7 @@ async function listenerLoop(onEntry?: (entry: Entry) => void): Promise<void> {
       await currentSoxProc.exited;
       clearTimeout(cutoff);
       currentSoxProc = null;
+      const utteranceEndMs = Date.now();
 
       if (!listening) {
         try { unlinkSync(tmpPath); } catch { /* ok */ }
@@ -152,14 +280,33 @@ async function listenerLoop(onEntry?: (entry: Entry) => void): Promise<void> {
 
       if (text.length > 0 && text !== lastText) {
         lastText = text;
-        const timestamp = ts();
+        const audioDurationSec = await getAudioDuration(tmpPath);
+        const utteranceStartMs = utteranceEndMs - audioDurationSec * 1000;
+        const timestamp = ts(new Date(utteranceStartMs));
         const screenshotRelPath = `screenshots/${timestamp}.png`;
+        const dawAudioRelPath = `audio/${timestamp}.wav`;
 
         try { unlinkSync(tmpPath); } catch { /* ok */ }
         await takeScreenshot(join(MEMO_DIR, screenshotRelPath));
-        appendToMemo(timestamp, text, screenshotRelPath);
+        const hasDaw = await extractDawClip(
+          utteranceStartMs,
+          utteranceEndMs,
+          join(MEMO_DIR, dawAudioRelPath),
+        );
+        appendToMemo(
+          timestamp,
+          text,
+          screenshotRelPath,
+          hasDaw ? dawAudioRelPath : undefined,
+        );
+        await resetDawRecorder();
 
-        const entry: Entry = { timestamp, text, screenshotRelPath };
+        const entry: Entry = {
+          timestamp,
+          text,
+          screenshotRelPath,
+          ...(hasDaw ? { dawAudioRelPath } : {}),
+        };
         onEntry?.(entry);
         console.error(`[${timestamp}] ${text}`);
       } else {

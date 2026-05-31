@@ -10,7 +10,8 @@ Speak your thoughts while working and studio-runner transcribes them, takes a sc
 2. Records continuously until 3s of silence — one clean utterance per capture
 3. Transcribes via whisper-cpp on the GPU (large-v3-turbo model, Apple Silicon)
 4. Captures a full-screen screenshot
-5. Appends a timestamped entry to `memos/YYYY-MM-DD.md`
+5. **Captures the DAW audio**: in parallel, a second sox process records your DAW output from a virtual loopback device (BlackHole 2ch) at CD quality. Each memo entry includes a WAV with the 10 seconds (configurable) before you started talking through to the end of your utterance.
+6. Appends a timestamped entry to `memos/YYYY-MM-DD.md`
 
 Everything runs locally — no API keys, no internet, no data leaves your machine.
 
@@ -18,12 +19,23 @@ Everything runs locally — no API keys, no internet, no data leaves your machin
 
 - macOS with Apple Silicon
 - [Bun](https://bun.sh)
-- `brew install sox whisper-cpp`
+- `brew install sox whisper-cpp blackhole-2ch`
 - whisper model: `ggml-large-v3-turbo-q5_0.bin` at `/opt/homebrew/share/whisper-cpp/models/`
 
   ```bash
   whisper-cpp-download-ggml-model large-v3-turbo-q5_0
   ```
+
+### One-time DAW routing setup
+
+To capture DAW audio alongside your voice notes, route DAW output to BlackHole:
+
+1. Open **Audio MIDI Setup** (`/System/Applications/Utilities`)
+2. Click `+` → **Create Multi-Output Device**
+3. Tick both your speakers/interface AND **BlackHole 2ch**
+4. In your DAW, set the output to that Multi-Output Device
+
+You'll keep hearing audio through your speakers, but BlackHole now receives a copy that studio-runner can record. If you skip this setup or set `STUDIO_DAW_DEVICE=""`, studio-runner falls back to mic + screenshot only.
 
 ## Quick start
 
@@ -70,6 +82,8 @@ Claude can then call `check_speech` to retrieve spoken comments, `get_memo` to r
 | `WHISPER_LANG` | `en` | Language code (`nl` for Dutch) |
 | `STUDIO_VAD_THRESHOLD` | `-50` | RMS dB threshold for voice activity detection |
 | `STUDIO_MIC_GAIN` | `25` | Microphone gain in dB applied before VAD |
+| `STUDIO_DAW_DEVICE` | `BlackHole 2ch` | CoreAudio input device for DAW capture. Set to `""` to disable. |
+| `STUDIO_DAW_PREROLL` | `10` | Seconds of DAW audio retained before each utterance |
 
 ## Output structure
 
@@ -79,4 +93,6 @@ Claude can then call `check_speech` to retrieve spoken comments, `get_memo` to r
     YYYY-MM-DD.md          ← running memo
     screenshots/
       YYMMDDHHMMSS.png     ← timestamped captures
+    audio/
+      YYMMDDHHMMSS.wav     ← DAW audio clip per utterance (CD quality)
 ```
