@@ -1,18 +1,15 @@
 /**
- * studio-runner — voice-to-memo listener for DAW production sessions
+ * studio-runner — voice-to-memo + DeepSeek-backed track-state assistant
  *
- * When run directly, starts an MCP server for Claude Code:
- *   bun run studio-runner.ts
+ * Single CLI. Two MIDI bindings learned at startup:
+ *   - memo button: hold + speak → entry appended to .studiorunner.d/raw.md,
+ *     DeepSeek consolidates into studiorunner.md
+ *   - ask button:  hold + speak → DeepSeek answers from the current state,
+ *     reply prints, appends to .studiorunner.d/chat.md, and is spoken via `say`
  *
- * When imported, exposes core functions used by listen.ts (standalone CLI).
+ * Subcommand: `prune` drops already-consolidated raw entries.
  */
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import { $ } from "bun";
 import { Input as MidiInput } from "@julusian/midi";
 import {
@@ -20,122 +17,101 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
 // ── Configuration ────────────────────────────────────────────────────────
 
-export const PROJECT_ROOT = process.env.STUDIO_PROJECT_ROOT || process.cwd();
-export const MEMO_DIR = join(PROJECT_ROOT, "memos");
-export const SCREENSHOTS_DIR = join(MEMO_DIR, "screenshots");
-export const AUDIO_DIR = join(MEMO_DIR, "audio");
-const MIC_GAIN_DB = parseInt(process.env.STUDIO_MIC_GAIN || "25", 10);
-export const WHISPER_MODEL =
+const PROJECT_ROOT = process.env.STUDIO_PROJECT_ROOT || process.cwd();
+const RUNNER_DIR_NAME = process.env.STUDIO_RUNNER_DIR || ".studiorunner.d";
+const NOTES_FILE = join(PROJECT_ROOT, process.env.STUDIO_NOTES_FILE || "studiorunner.md");
+const RUNNER_DIR = join(PROJECT_ROOT, RUNNER_DIR_NAME);
+const RAW_FILE = join(RUNNER_DIR, "raw.md");
+const CHAT_FILE = join(RUNNER_DIR, "chat.md");
+const SCREENSHOTS_DIR = join(RUNNER_DIR, "screenshots");
+const AUDIO_DIR = join(RUNNER_DIR, "audio");
+
+const WHISPER_MODEL =
   process.env.WHISPER_MODEL ||
   "/opt/homebrew/share/whisper-cpp/models/ggml-medium.en.bin";
-export const WHISPER_LANG = process.env.WHISPER_LANG || "en";
+const WHISPER_LANG = process.env.WHISPER_LANG || "en";
 
-// DAW audio capture (CD quality, recorded from a virtual loopback device).
-// Set STUDIO_DAW_DEVICE="" to disable DAW capture.
-const DAW_DEVICE = process.env.STUDIO_DAW_DEVICE ?? "BlackHole 2ch";
-const DAW_PREROLL_SEC = parseInt(process.env.STUDIO_DAW_PREROLL || "10", 10);
-const DAW_ROLLING_PATH = "/tmp/studio-runner-daw-rolling.raw";
-
-// Mic rolling buffer — sox runs continuously so the audio device is always
-// hot, avoiding the 200–700 ms cold-start latency that would otherwise eat
-// the first words of every utterance.
+const MIC_GAIN_DB = parseInt(process.env.STUDIO_MIC_GAIN || "25", 10);
 const MIC_PREROLL_SEC = parseFloat(process.env.STUDIO_MIC_PREROLL ?? "0.5");
 const MIC_POSTROLL_SEC = parseFloat(process.env.STUDIO_MIC_POSTROLL ?? "0.5");
 const MIC_ROLLING_PATH = "/tmp/studio-runner-mic-rolling.raw";
 
-// Both rolling buffers use raw PCM (no WAV header) so that extraction can
-// read up to the actual on-disk byte count, not whatever stale length a
-// still-being-written WAV header would advertise. Without this, the last
-// few hundred ms of each utterance get clipped.
+const DAW_DEVICE = process.env.STUDIO_DAW_DEVICE ?? "BlackHole 2ch";
+const DAW_PREROLL_SEC = parseInt(process.env.STUDIO_DAW_PREROLL || "10", 10);
+const DAW_ROLLING_PATH = "/tmp/studio-runner-daw-rolling.raw";
+
+const DEEPSEEK_MODEL = process.env.STUDIO_DEEPSEEK_MODEL || "deepseek-chat";
+const TTS_ENABLED = (process.env.STUDIO_TTS ?? "1") !== "0";
+const TTS_VOICE = process.env.STUDIO_TTS_VOICE;
+const PRUNE_ASSETS = process.env.STUDIO_PRUNE_ASSETS === "1";
+
+const MIC_BYTES_PER_SEC = 16000 * 1 * 2;
+const DAW_BYTES_PER_SEC = 44100 * 2 * 2;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-export function ts(d: Date = new Date()): string {
+function ts(d: Date = new Date()): string {
   return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
-export function dateStr(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function humanTs(d: Date = new Date()): string {
+  const yy = String(d.getFullYear()).slice(2);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
-export function memoFile(): string {
-  return join(MEMO_DIR, `${dateStr()}.md`);
+function ensureDir(d: string): void {
+  if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
-export function ensureDir(dir: string): void {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-}
-
-export function ensureMemo(): string {
-  ensureDir(MEMO_DIR);
+function ensureLayout(): void {
+  ensureDir(RUNNER_DIR);
   ensureDir(SCREENSHOTS_DIR);
   ensureDir(AUDIO_DIR);
-  const mf = memoFile();
-  if (!existsSync(mf)) {
-    appendFileSync(mf, `# Session Memo — ${dateStr()}\n\n`);
+  if (!existsSync(NOTES_FILE)) {
+    writeFileSync(
+      NOTES_FILE,
+      "# Studio Runner\n\n## TODO\n\n## Track notes\n\n## Open questions\n\n## Session timeline\n",
+    );
   }
-  return mf;
+  if (!existsSync(RAW_FILE)) {
+    writeFileSync(RAW_FILE, "<!-- consolidated_through: none -->\n\n");
+  }
 }
 
-export function appendToMemo(
-  timestamp: string,
-  text: string,
-  screenshotRelPath: string,
-  dawAudioRelPath?: string,
-  dawText?: string,
-): void {
-  // Heading uses just HH:MM:SS — the date is already in the file title
-  // and filename, so repeating it on every entry is noise.
-  const clock = `${timestamp.slice(6, 8)}:${timestamp.slice(8, 10)}:${timestamp.slice(10, 12)}`;
-  const audioLine = dawAudioRelPath ? `[DAW audio](${dawAudioRelPath})\n` : "";
-  const dawLine = dawText && dawText.length > 0 ? `**DAW:** ${dawText}\n` : "";
-  const entry = `\n## ${clock}\n![screenshot](${screenshotRelPath})\n${audioLine}${dawLine}**Gianfranco:** ${text}\n---\n`;
-  appendFileSync(memoFile(), entry);
-}
+// ── Whisper / screenshot ─────────────────────────────────────────────────
 
-// ── Audio / Whisper ──────────────────────────────────────────────────────
-
-
-export async function transcribe(fp: string): Promise<string> {
-  // --no-fallback disables whisper's temperature-fallback retry, which is the
-  // main source of "1, 2, 3, 4, 5" → "…6, 7, 8, 9, 10" pattern hallucinations
-  // under heavy quantisation. Default beam search (5/5) is kept for quality.
+async function transcribe(fp: string): Promise<string> {
+  // --no-fallback disables whisper's temperature-fallback retry, the main
+  // source of pattern hallucinations ("1, 2, 3" → "…6, 7, 8, 9, 10") on
+  // heavily-quantised models.
   const r =
     await $`whisper-cli -m ${WHISPER_MODEL} -l ${WHISPER_LANG} --no-timestamps -t 6 --no-speech-thold 0.5 --no-fallback -f "${fp}" 2>/dev/null`.quiet();
   return r.stdout.toString().trim().replace(/^\[.*?\]\s*/, "");
 }
 
-export async function takeScreenshot(fp: string): Promise<void> {
+async function takeScreenshot(fp: string): Promise<void> {
   await $`screencapture -x "${fp}"`.quiet();
 }
 
-export async function getAudioDuration(fp: string): Promise<number> {
-  try {
-    const r = await $`soxi -D "${fp}"`.quiet();
-    return parseFloat(r.stdout.toString().trim()) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-// ── DAW capture ──────────────────────────────────────────────────────────
-// A second sox process records DAW output from a virtual loopback device
-// (BlackHole 2ch by default) at CD quality into a rolling temp file. After
-// each utterance we extract the relevant time window and then reset the
-// rolling file, so disk usage stays bounded to "time since last utterance".
+// ── DAW rolling recorder ────────────────────────────────────────────────
 
 let dawProc: ReturnType<typeof Bun.spawn> | null = null;
 let dawAvailable = false;
 let dawWarningLogged = false;
-const DAW_BYTES_PER_SEC = 44100 * 2 * 2;
 
 function spawnDawSox(): ReturnType<typeof Bun.spawn> {
   return Bun.spawn(
@@ -150,11 +126,9 @@ function spawnDawSox(): ReturnType<typeof Bun.spawn> {
   );
 }
 
-export function startDawRecorder(): void {
+function startDawRecorder(): void {
   if (!DAW_DEVICE) return;
-  try {
-    unlinkSync(DAW_ROLLING_PATH);
-  } catch { /* ok */ }
+  try { unlinkSync(DAW_ROLLING_PATH); } catch { /* ok */ }
   try {
     dawProc = spawnDawSox();
   } catch (err) {
@@ -167,8 +141,6 @@ export function startDawRecorder(): void {
     return;
   }
   dawAvailable = true;
-
-  // Watchdog: if sox dies within 1s, the device probably isn't present.
   setTimeout(() => {
     if (dawProc && dawProc.exitCode !== null) {
       if (!dawWarningLogged) {
@@ -183,7 +155,7 @@ export function startDawRecorder(): void {
   }, 1000);
 }
 
-export function stopDawRecorder(): void {
+function stopDawRecorder(): void {
   dawProc?.kill();
   dawProc = null;
   dawAvailable = false;
@@ -209,11 +181,34 @@ async function resetDawRecorder(): Promise<void> {
   }
 }
 
+async function extractDawClip(
+  utteranceStartMs: number,
+  utteranceEndMs: number,
+  outPath: string,
+): Promise<boolean> {
+  if (!dawAvailable || !existsSync(DAW_ROLLING_PATH)) return false;
+  let fileSize: number;
+  try { fileSize = statSync(DAW_ROLLING_PATH).size; } catch { return false; }
+  const fileDurationSec = fileSize / DAW_BYTES_PER_SEC;
+  const effectiveStartMs = Date.now() - fileDurationSec * 1000;
+  const windowStartMs = utteranceStartMs - DAW_PREROLL_SEC * 1000;
+  const startOffsetSec = Math.max(0, (windowStartMs - effectiveStartMs) / 1000);
+  const clippedStartMs = Math.max(windowStartMs, effectiveStartMs);
+  const durationSec = (utteranceEndMs - clippedStartMs) / 1000;
+  if (durationSec <= 0) return false;
+  try {
+    await $`sox -t raw -r 44100 -c 2 -b 16 -e signed-integer "${DAW_ROLLING_PATH}" "${outPath}" trim ${startOffsetSec} ${durationSec}`.quiet();
+    return existsSync(outPath);
+  } catch (err) {
+    console.error("DAW clip extraction failed:", err);
+    return false;
+  }
+}
+
 // ── Mic rolling buffer ───────────────────────────────────────────────────
 
-let micRollingProc: ReturnType<typeof Bun.spawn> | null = null;
-let micRollingAvailable = false;
-const MIC_BYTES_PER_SEC = 16000 * 1 * 2;
+let micProc: ReturnType<typeof Bun.spawn> | null = null;
+let micAvailable = false;
 
 function spawnMicSox(): ReturnType<typeof Bun.spawn> {
   return Bun.spawn(
@@ -228,45 +223,44 @@ function spawnMicSox(): ReturnType<typeof Bun.spawn> {
   );
 }
 
-export function startMicRecorder(): void {
+function startMicRecorder(): void {
   try { unlinkSync(MIC_ROLLING_PATH); } catch { /* ok */ }
   try {
-    micRollingProc = spawnMicSox();
+    micProc = spawnMicSox();
   } catch (err) {
     console.error("Mic recorder spawn failed:", err);
-    micRollingProc = null;
-    micRollingAvailable = false;
+    micProc = null;
+    micAvailable = false;
     return;
   }
-  micRollingAvailable = true;
+  micAvailable = true;
   setTimeout(() => {
-    if (micRollingProc && micRollingProc.exitCode !== null) {
+    if (micProc && micProc.exitCode !== null) {
       console.error("Mic recorder died at startup — no input device?");
-      micRollingProc = null;
-      micRollingAvailable = false;
+      micProc = null;
+      micAvailable = false;
     }
   }, 1000);
 }
 
-export function stopMicRecorder(): void {
-  micRollingProc?.kill();
-  micRollingProc = null;
-  micRollingAvailable = false;
+function stopMicRecorder(): void {
+  micProc?.kill();
+  micProc = null;
+  micAvailable = false;
   try { unlinkSync(MIC_ROLLING_PATH); } catch { /* ok */ }
 }
 
-export async function extractMicClip(
+async function extractMicClip(
   utteranceStartMs: number,
   utteranceEndMs: number,
   outPath: string,
 ): Promise<boolean> {
-  if (!micRollingAvailable || !existsSync(MIC_ROLLING_PATH)) return false;
+  if (!micAvailable || !existsSync(MIC_ROLLING_PATH)) return false;
   let fileSize: number;
   try { fileSize = statSync(MIC_ROLLING_PATH).size; } catch { return false; }
   // Derive the recording's wall-clock start from how much audio is actually
-  // on disk, not from Date.now() at spawn time. This self-corrects for sox's
-  // 200–700 ms CoreAudio cold-start AND any OS write-buffer lag, both of
-  // which would otherwise push the trim offset past the real start of speech.
+  // on disk, not from Date.now() at spawn. Self-corrects for sox's variable
+  // CoreAudio cold-start AND OS write-buffer lag.
   const fileDurationSec = fileSize / MIC_BYTES_PER_SEC;
   const effectiveStartMs = Date.now() - fileDurationSec * 1000;
   const windowStartMs = utteranceStartMs - MIC_PREROLL_SEC * 1000;
@@ -284,237 +278,223 @@ export async function extractMicClip(
   }
 }
 
-// ── DAW clip extraction ──────────────────────────────────────────────────
+// ── MIDI bindings ────────────────────────────────────────────────────────
 
-export async function extractDawClip(
-  utteranceStartMs: number,
-  utteranceEndMs: number,
-  outPath: string,
-): Promise<boolean> {
-  if (!dawAvailable || !existsSync(DAW_ROLLING_PATH)) return false;
-
-  let fileSize: number;
-  try { fileSize = statSync(DAW_ROLLING_PATH).size; } catch { return false; }
-  const fileDurationSec = fileSize / DAW_BYTES_PER_SEC;
-  const effectiveRecordingStartMs = Date.now() - fileDurationSec * 1000;
-  const windowStartMs = utteranceStartMs - DAW_PREROLL_SEC * 1000;
-  const startOffsetSec = Math.max(0, (windowStartMs - effectiveRecordingStartMs) / 1000);
-  const clippedStartMs = Math.max(windowStartMs, effectiveRecordingStartMs);
-  const durationSec = (utteranceEndMs - clippedStartMs) / 1000;
-  if (durationSec <= 0) return false;
-
-  try {
-    await $`sox -t raw -r 44100 -c 2 -b 16 -e signed-integer "${DAW_ROLLING_PATH}" "${outPath}" trim ${startOffsetSec} ${durationSec}`.quiet();
-    return existsSync(outPath);
-  } catch (err) {
-    console.error("DAW clip extraction failed:", err);
-    return false;
-  }
-}
-
-// ── Entry ────────────────────────────────────────────────────────────────
-
-export interface Entry {
-  timestamp: string;
-  text: string;
-  screenshotRelPath: string;
-  dawAudioRelPath?: string;
-  dawText?: string;
-}
-
-// ── MIDI push-to-talk ────────────────────────────────────────────────────
-//
-// Recording is gated by a MIDI message the user picks at startup: hold the
-// button/pedal → mic records; release → recording ends and is queued for
-// transcription. The bound message is learned interactively the first time
-// the user hits any button.
-
-export type MidiBinding =
+type MidiBinding =
   | { kind: "note"; channel: number; note: number; portName: string }
   | { kind: "cc"; channel: number; cc: number; portName: string };
 
-let midiBinding: MidiBinding | null = null;
-let midiInput: MidiInput | null = null;
+let midiPorts: MidiInput[] = [];
+let midiPortNames: string[] = [];
+let memoBinding: MidiBinding | null = null;
+let askBinding: MidiBinding | null = null;
 
-export function describeMidiBinding(b: MidiBinding): string {
+function describeMidiBinding(b: MidiBinding): string {
   const label = b.kind === "note"
     ? `Note ${b.note} ch${b.channel + 1}`
     : `CC ${b.cc} ch${b.channel + 1}`;
   return `${b.portName} · ${label}`;
 }
 
-export async function learnMidiBinding(): Promise<MidiBinding> {
-  // Open every input port — CoreMIDI broadcasts, so the user can press any
-  // button on any device and we'll hear it without disturbing whatever's
-  // already consuming MIDI (the DAW).
+function bindingsEqual(a: MidiBinding, b: MidiBinding): boolean {
+  if (a.kind !== b.kind || a.portName !== b.portName || a.channel !== b.channel) return false;
+  if (a.kind === "note" && b.kind === "note") return a.note === b.note;
+  if (a.kind === "cc" && b.kind === "cc") return a.cc === b.cc;
+  return false;
+}
+
+function openAllMidiPorts(): void {
   const probe = new MidiInput();
   const portCount = probe.getPortCount();
-  const portNames: string[] = [];
-  for (let i = 0; i < portCount; i++) portNames.push(probe.getPortName(i));
+  midiPortNames = [];
+  for (let i = 0; i < portCount; i++) midiPortNames.push(probe.getPortName(i));
   if (portCount === 0) {
     throw new Error("No MIDI input devices found — connect a controller and retry");
   }
+  midiPorts = [];
+  for (let i = 0; i < portCount; i++) {
+    const inp = new MidiInput();
+    inp.openPort(i);
+    midiPorts.push(inp);
+  }
+}
 
-  const inputs: MidiInput[] = [];
-  for (let i = 0; i < portCount; i++) inputs.push(new MidiInput());
+async function captureBinding(label: string, exclude: MidiBinding | null): Promise<MidiBinding> {
+  console.error(`Press and hold the button/pedal you want to use to ${label}...`);
+  const result = await new Promise<{ binding: MidiBinding; portIdx: number }>((resolve) => {
+    let captured: { binding: MidiBinding; portIdx: number } | null = null;
+    midiPorts.forEach((inp, idx) => {
+      inp.on("message", (_dt: number, msg: number[]) => {
+        const [status, data1, data2] = msg;
+        const type = status & 0xf0;
+        const channel = status & 0x0f;
 
-  console.error("Press and hold the button/pedal you want to use for push-to-talk...");
-
-  const result = await new Promise<{ binding: MidiBinding; idx: number }>(
-    (resolve) => {
-      let captured: { binding: MidiBinding; idx: number } | null = null;
-      inputs.forEach((inp, idx) => {
-        inp.on("message", (_dt: number, msg: number[]) => {
-          const [status, data1, data2] = msg;
-          const type = status & 0xf0;
-          const channel = status & 0x0f;
-
-          if (!captured) {
-            if (type === 0x90 && data2 > 0) {
-              captured = {
-                binding: { kind: "note", channel, note: data1, portName: portNames[idx] },
-                idx,
-              };
-            } else if (type === 0xb0 && data2 >= 64) {
-              captured = {
-                binding: { kind: "cc", channel, cc: data1, portName: portNames[idx] },
-                idx,
-              };
-            }
+        if (!captured) {
+          let candidate: MidiBinding | null = null;
+          if (type === 0x90 && data2 > 0) {
+            candidate = { kind: "note", channel, note: data1, portName: midiPortNames[idx] };
+          } else if (type === 0xb0 && data2 >= 64) {
+            candidate = { kind: "cc", channel, cc: data1, portName: midiPortNames[idx] };
+          }
+          if (!candidate) return;
+          if (exclude && bindingsEqual(candidate, exclude)) {
+            console.error("That button is already bound to the other action — pick a different one.");
             return;
           }
+          captured = { binding: candidate, portIdx: idx };
+          return;
+        }
 
-          // Consume the matching "up" so we don't start the session already
-          // holding the button (which would trigger a phantom recording).
-          if (idx !== captured.idx) return;
-          const b = captured.binding;
-          if (b.kind === "note" && channel === b.channel && data1 === b.note) {
-            const isOff =
-              type === 0x80 || (type === 0x90 && data2 === 0);
-            if (isOff) resolve(captured);
-          } else if (b.kind === "cc" && type === 0xb0 && channel === b.channel && data1 === b.cc) {
-            if (data2 < 64) resolve(captured);
-          }
-        });
-        inp.openPort(idx);
+        // Consume the matching "up" so the session doesn't start mid-press.
+        if (idx !== captured.portIdx) return;
+        const b = captured.binding;
+        if (b.kind === "note" && channel === b.channel && data1 === b.note) {
+          if (type === 0x80 || (type === 0x90 && data2 === 0)) resolve(captured);
+        } else if (b.kind === "cc" && type === 0xb0 && channel === b.channel && data1 === b.cc) {
+          if (data2 < 64) resolve(captured);
+        }
       });
-    },
-  );
-
-  // Keep only the chosen port; drop listeners on the others.
-  inputs.forEach((inp, idx) => {
-    if (idx !== result.idx) {
-      try { inp.closePort(); } catch { /* ok */ }
-    }
+    });
   });
-  midiInput = inputs[result.idx];
-  midiInput.removeAllListeners("message");
-  midiBinding = result.binding;
-  console.error(`Bound to ${describeMidiBinding(result.binding)}`);
+  midiPorts.forEach((p) => { try { p.removeAllListeners("message"); } catch { /* ok */ } });
+  console.error(`Bound: ${describeMidiBinding(result.binding)}`);
   return result.binding;
 }
 
-// ── Listener loop ────────────────────────────────────────────────────────
+async function learnTwoBindings(): Promise<void> {
+  openAllMidiPorts();
+  memoBinding = await captureBinding("leave a note", null);
+  askBinding = await captureBinding("ask a question", memoBinding);
+}
+
+function shutdownMidi(): void {
+  midiPorts.forEach((p) => {
+    try { p.removeAllListeners("message"); } catch { /* ok */ }
+    try { p.closePort(); } catch { /* ok */ }
+  });
+  midiPorts = [];
+  memoBinding = null;
+  askBinding = null;
+}
+
+// ── Press queues + gate ──────────────────────────────────────────────────
 
 let listening = false;
-let pressActive = false;
+let activeBinding: "memo" | "ask" | null = null;
 let pressStartMs = 0;
 
-interface MicCapture {
-  startMs: number;
-  endMs: number;
-}
+interface MicCapture { startMs: number; endMs: number; }
 
-const captureQueue: MicCapture[] = [];
-let captureSignal: (() => void) | null = null;
+const memoQueue: MicCapture[] = [];
+const askQueue: MicCapture[] = [];
+let memoSignal: (() => void) | null = null;
+let askSignal: (() => void) | null = null;
+let consolidationSignal: (() => void) | null = null;
+let consolidationPending = false;
 
-function nudgeWorker(): void {
-  if (captureSignal) { captureSignal(); captureSignal = null; }
-}
-
-export function isListening(): boolean {
-  return listening;
-}
-
-export async function startListening(onEntry?: (entry: Entry) => void): Promise<void> {
-  if (listening) return;
-  if (!midiBinding || !midiInput) {
-    throw new Error("Call learnMidiBinding() before startListening()");
-  }
-  listening = true;
-  startMicRecorder();
-  startDawRecorder();
-  attachMidiGate();
-  workerLoop(onEntry);
-}
-
-export function stopListening(): void {
-  if (!listening) return;
-  listening = false;
-  pressActive = false;
-  stopMicRecorder();
-  // Detach the gate but keep the port open so a later startListening()
-  // can re-arm without re-learning the binding.
-  if (midiInput) {
-    try { midiInput.removeAllListeners("message"); } catch { /* ok */ }
-  }
-  nudgeWorker();
-  stopDawRecorder();
-}
-
-export function shutdownMidi(): void {
-  if (midiInput) {
-    try { midiInput.removeAllListeners("message"); } catch { /* ok */ }
-    try { midiInput.closePort(); } catch { /* ok */ }
-    midiInput = null;
-  }
-  midiBinding = null;
+function nudgeMemo(): void { if (memoSignal) { memoSignal(); memoSignal = null; } }
+function nudgeAsk(): void { if (askSignal) { askSignal(); askSignal = null; } }
+function nudgeConsolidation(): void {
+  consolidationPending = true;
+  if (consolidationSignal) { consolidationSignal(); consolidationSignal = null; }
 }
 
 function attachMidiGate(): void {
-  const input = midiInput!;
-  const b = midiBinding!;
-  input.on("message", (_dt: number, msg: number[]) => {
-    if (!listening) return;
-    const [status, data1, data2] = msg;
-    const type = status & 0xf0;
-    const channel = status & 0x0f;
-    if (b.kind === "note") {
-      if (channel !== b.channel || data1 !== b.note) return;
-      if (type === 0x90 && data2 > 0) onPressDown();
-      else if (type === 0x80 || (type === 0x90 && data2 === 0)) onPressUp();
-    } else {
-      if (type !== 0xb0 || channel !== b.channel || data1 !== b.cc) return;
-      if (data2 >= 64) onPressDown();
-      else onPressUp();
-    }
+  midiPorts.forEach((inp) => {
+    inp.on("message", (_dt: number, msg: number[]) => {
+      if (!listening) return;
+      const [status, data1, data2] = msg;
+      const type = status & 0xf0;
+      const channel = status & 0x0f;
+
+      const handle = (b: MidiBinding, which: "memo" | "ask") => {
+        if (b.kind === "note") {
+          if (channel !== b.channel || data1 !== b.note) return;
+          if (type === 0x90 && data2 > 0) onPressDown(which);
+          else if (type === 0x80 || (type === 0x90 && data2 === 0)) onPressUp(which);
+        } else {
+          if (type !== 0xb0 || channel !== b.channel || data1 !== b.cc) return;
+          if (data2 >= 64) onPressDown(which);
+          else onPressUp(which);
+        }
+      };
+
+      if (memoBinding) handle(memoBinding, "memo");
+      if (askBinding) handle(askBinding, "ask");
+    });
   });
 }
 
-function onPressDown(): void {
-  if (pressActive) return; // ignore repeats while already held
-  pressActive = true;
+function onPressDown(which: "memo" | "ask"): void {
+  if (activeBinding) return;
+  activeBinding = which;
   pressStartMs = Date.now();
 }
 
-function onPressUp(): void {
-  if (!pressActive) return;
-  pressActive = false;
-  captureQueue.push({ startMs: pressStartMs, endMs: Date.now() });
-  nudgeWorker();
+function onPressUp(which: "memo" | "ask"): void {
+  if (activeBinding !== which) return;
+  activeBinding = null;
+  const cap = { startMs: pressStartMs, endMs: Date.now() };
+  if (which === "memo") { memoQueue.push(cap); nudgeMemo(); }
+  else { askQueue.push(cap); nudgeAsk(); }
 }
 
-async function processUtterance(
-  cap: MicCapture,
-  lastText: string,
-  onEntry?: (entry: Entry) => void,
-): Promise<string> {
-  // Give sox time to flush its write buffer (~250 ms internal). Without
-  // this wait, the last few hundred ms of speech are still buffered, AND
-  // our file-size-derived offset math slides the whole window left by the
-  // flush lag — so the tail is missing and the head is over-padded.
+// ── Raw entry append ─────────────────────────────────────────────────────
+
+interface RawEntryInput {
+  timestamp: string;
+  micText: string;
+  audioRel?: string;
+  screenshotRel?: string;
+  dawText?: string;
+}
+
+function appendRawEntry(e: RawEntryInput): void {
+  const human = humanTs(new Date(
+    2000 + parseInt(e.timestamp.slice(0, 2), 10),
+    parseInt(e.timestamp.slice(2, 4), 10) - 1,
+    parseInt(e.timestamp.slice(4, 6), 10),
+    parseInt(e.timestamp.slice(6, 8), 10),
+    parseInt(e.timestamp.slice(8, 10), 10),
+    parseInt(e.timestamp.slice(10, 12), 10),
+  ));
+  const lines = [
+    "",
+    `## ${human}`,
+    `ts: ${e.timestamp}`,
+  ];
+  if (e.audioRel) lines.push(`audio: ${e.audioRel}`);
+  if (e.screenshotRel) lines.push(`screenshot: ${e.screenshotRel}`);
+  lines.push(`Gianfranco: ${e.micText}`);
+  if (e.dawText && e.dawText.length > 0) lines.push(`DAW: ${e.dawText}`);
+  lines.push("---");
+  lines.push("");
+  appendFileSync(RAW_FILE, lines.join("\n"));
+}
+
+// ── Memo worker ──────────────────────────────────────────────────────────
+
+async function memoWorker(): Promise<void> {
+  let lastText = "";
+  while (listening) {
+    const cap = memoQueue.shift();
+    if (!cap) {
+      await new Promise<void>((r) => { memoSignal = r; });
+      continue;
+    }
+    try {
+      lastText = await processMemo(cap, lastText);
+    } catch (err) {
+      console.error("memo error:", err);
+    }
+  }
+}
+
+async function processMemo(cap: MicCapture, lastText: string): Promise<string> {
+  // Let sox flush its write buffer before extracting.
   await new Promise((r) => setTimeout(r, 500));
-  const tmpMic = `/tmp/studio-runner-${cap.startMs}.wav`;
+
+  const tmpMic = `/tmp/studio-runner-memo-${cap.startMs}.wav`;
   const hasMic = await extractMicClip(cap.startMs, cap.endMs, tmpMic);
   if (!hasMic) return lastText;
 
@@ -522,204 +502,368 @@ async function processUtterance(
   try { unlinkSync(tmpMic); } catch { /* ok */ }
 
   if (text.length === 0 || text === lastText) {
-    // duplicate: reset guard so same phrase can reappear after a pause
     return text.length > 0 ? "" : lastText;
   }
 
   const timestamp = ts(new Date(cap.startMs));
-  const screenshotRelPath = `screenshots/${timestamp}.png`;
-  const dawAudioRelPath = `audio/${timestamp}.wav`;
+  const screenshotRel = `${RUNNER_DIR_NAME}/screenshots/${timestamp}.png`;
+  const audioRel = `${RUNNER_DIR_NAME}/audio/${timestamp}.wav`;
+  const screenshotAbs = join(SCREENSHOTS_DIR, `${timestamp}.png`);
+  const audioAbs = join(AUDIO_DIR, `${timestamp}.wav`);
 
-  await takeScreenshot(join(MEMO_DIR, screenshotRelPath));
-  const hasDaw = await extractDawClip(
-    cap.startMs,
-    cap.endMs,
-    join(MEMO_DIR, dawAudioRelPath),
-  );
-  const dawText = hasDaw ? await transcribe(join(MEMO_DIR, dawAudioRelPath)) : "";
-  appendToMemo(
+  await takeScreenshot(screenshotAbs);
+  const hasDaw = await extractDawClip(cap.startMs, cap.endMs, audioAbs);
+  const dawText = hasDaw ? await transcribe(audioAbs) : "";
+
+  appendRawEntry({
     timestamp,
-    text,
-    screenshotRelPath,
-    hasDaw ? dawAudioRelPath : undefined,
-    dawText.length > 0 ? dawText : undefined,
-  );
+    micText: text,
+    audioRel: hasDaw ? audioRel : undefined,
+    screenshotRel,
+    dawText: dawText.length > 0 ? dawText : undefined,
+  });
   await resetDawRecorder();
 
-  const entry: Entry = {
-    timestamp,
-    text,
-    screenshotRelPath,
-    ...(hasDaw ? { dawAudioRelPath } : {}),
-    ...(dawText.length > 0 ? { dawText } : {}),
-  };
-  onEntry?.(entry);
+  console.error(`[${timestamp}] ${text}`);
+  nudgeConsolidation();
   return text;
 }
 
-async function workerLoop(onEntry?: (entry: Entry) => void): Promise<void> {
-  let lastText = "";
+// ── Ask worker ───────────────────────────────────────────────────────────
+
+async function askWorker(): Promise<void> {
   while (listening) {
-    const cap = captureQueue.shift();
+    const cap = askQueue.shift();
     if (!cap) {
-      await new Promise<void>((r) => { captureSignal = r; });
+      await new Promise<void>((r) => { askSignal = r; });
       continue;
     }
     try {
-      lastText = await processUtterance(cap, lastText, onEntry);
+      await processAsk(cap);
     } catch (err) {
-      console.error("Processing error:", err);
+      console.error("ask error:", err);
     }
   }
 }
 
-// ── MCP Server ───────────────────────────────────────────────────────────
-// Only runs when the file is executed directly (not imported).
+async function processAsk(cap: MicCapture): Promise<void> {
+  await new Promise((r) => setTimeout(r, 500));
+  const tmpMic = `/tmp/studio-runner-ask-${cap.startMs}.wav`;
+  const hasMic = await extractMicClip(cap.startMs, cap.endMs, tmpMic);
+  if (!hasMic) return;
+  const question = await transcribe(tmpMic);
+  try { unlinkSync(tmpMic); } catch { /* ok */ }
+  if (question.length === 0) return;
+  console.error(`Q: ${question}`);
+
+  const state = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf-8") : "";
+  const recent = readUnprocessedRaw();
+
+  const system =
+    "You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.";
+
+  const user =
+`=== Current track state ===
+${state || "(empty)"}
+
+=== Unconsolidated recent notes (latest activity, may overlap with state) ===
+${recent || "(none)"}
+
+The producer asks: ${question}`;
+
+  let answer: string;
+  try {
+    answer = await deepseek(system, user);
+  } catch (err) {
+    console.error("DeepSeek call failed:", err);
+    return;
+  }
+
+  console.error(`A: ${answer}\n`);
+  appendChat(question, answer);
+  if (TTS_ENABLED) speak(answer);
+}
+
+function appendChat(question: string, answer: string): void {
+  const block = `\n## ${humanTs()}\n**Q:** ${question}\n\n**A:** ${answer}\n\n---\n`;
+  appendFileSync(CHAT_FILE, block);
+}
+
+function speak(text: string): void {
+  const args = TTS_VOICE ? ["-v", TTS_VOICE, text] : [text];
+  try {
+    Bun.spawn(["say", ...args], { stdout: "ignore", stderr: "ignore" });
+  } catch (err) {
+    console.error("`say` failed:", err);
+  }
+}
+
+// ── Raw parsing ──────────────────────────────────────────────────────────
+
+interface RawEntry {
+  ts: string;
+  human: string;
+  body: string;
+  audioRel?: string;
+  screenshotRel?: string;
+}
+
+function parseRaw(content: string): { watermark: string; entries: RawEntry[] } {
+  const lines = content.split("\n");
+  let watermark = "none";
+  let i = 0;
+  if (lines[0] && lines[0].startsWith("<!-- consolidated_through:")) {
+    const m = lines[0].match(/consolidated_through:\s*(\S+)\s*-->/);
+    if (m) watermark = m[1];
+    i = 1;
+  }
+  const entries: RawEntry[] = [];
+  let buf: string[] = [];
+  for (; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln === "---") {
+      if (buf.length) {
+        const block = buf.join("\n");
+        const tsMatch = block.match(/^ts:\s*(\d+)/m);
+        const humanMatch = block.match(/^##\s+(.+)$/m);
+        const audioMatch = block.match(/^audio:\s*(.+)$/m);
+        const screenshotMatch = block.match(/^screenshot:\s*(.+)$/m);
+        if (tsMatch && humanMatch) {
+          entries.push({
+            ts: tsMatch[1],
+            human: humanMatch[1],
+            body: block,
+            audioRel: audioMatch?.[1]?.trim(),
+            screenshotRel: screenshotMatch?.[1]?.trim(),
+          });
+        }
+      }
+      buf = [];
+    } else {
+      buf.push(ln);
+    }
+  }
+  return { watermark, entries };
+}
+
+function readUnprocessedRaw(): string {
+  if (!existsSync(RAW_FILE)) return "";
+  const content = readFileSync(RAW_FILE, "utf-8");
+  const { watermark, entries } = parseRaw(content);
+  const unprocessed = watermark === "none"
+    ? entries
+    : entries.filter((e) => e.ts > watermark);
+  return unprocessed.map((e) => `${e.body}\n---`).join("\n\n");
+}
+
+// ── Consolidation worker ─────────────────────────────────────────────────
+
+async function consolidationWorker(): Promise<void> {
+  while (listening) {
+    if (!consolidationPending) {
+      await new Promise<void>((r) => { consolidationSignal = r; });
+      continue;
+    }
+    consolidationPending = false;
+    try {
+      await runConsolidation();
+    } catch (err) {
+      console.error("consolidation failed:", err);
+    }
+  }
+}
+
+async function runConsolidation(): Promise<void> {
+  if (!existsSync(RAW_FILE)) return;
+  const content = readFileSync(RAW_FILE, "utf-8");
+  const { watermark, entries } = parseRaw(content);
+  const unprocessed = watermark === "none"
+    ? entries
+    : entries.filter((e) => e.ts > watermark);
+  if (unprocessed.length === 0) return;
+
+  const state = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf-8") : "";
+
+  const system =
+`You maintain a markdown document capturing the live state of a music-production session.
+Always preserve these four sections in this exact order:
+
+## TODO
+Checkbox list of action items the producer has mentioned (e.g. "- [ ] tame vocal sibilance bar 32"). Tick items the producer has marked done.
+
+## Track notes
+General considerations and decisions about the track (BPM, key, arrangement, mix decisions, sound choices). Free-form prose or short bullets.
+
+## Open questions
+Things the producer wondered aloud but hasn't decided. Remove an item once it's been answered or resolved.
+
+## Session timeline
+Condensed chronological summary, one bullet per meaningful utterance, oldest first. Format each bullet as:
+- HH:MM — short paraphrase ([audio](<audio path>) · [screenshot](<screenshot path>))
+where the paths come verbatim from the entry's "audio:" and "screenshot:" fields.
+
+Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.`;
+
+  const user =
+`=== Current state ===
+${state || "(empty — first consolidation)"}
+
+=== New raw utterances ===
+${unprocessed.map((e) => `${e.body}\n---`).join("\n\n")}
+
+Output the updated document.`;
+
+  let updated: string;
+  try {
+    updated = await deepseek(system, user);
+  } catch (err) {
+    console.error("consolidation DeepSeek call failed:", err);
+    return;
+  }
+
+  // Atomic state write.
+  const tmpState = NOTES_FILE + ".tmp";
+  writeFileSync(tmpState, updated.endsWith("\n") ? updated : updated + "\n");
+  renameSync(tmpState, NOTES_FILE);
+
+  // Advance the watermark to the highest ts we just consolidated.
+  const newWatermark = unprocessed[unprocessed.length - 1].ts;
+  advanceWatermark(content, newWatermark);
+
+  if (PRUNE_ASSETS) {
+    for (const e of unprocessed) {
+      if (e.audioRel) { try { unlinkSync(join(PROJECT_ROOT, e.audioRel)); } catch { /* ok */ } }
+      if (e.screenshotRel) { try { unlinkSync(join(PROJECT_ROOT, e.screenshotRel)); } catch { /* ok */ } }
+    }
+  }
+
+  console.error(`consolidated ${unprocessed.length} entr${unprocessed.length === 1 ? "y" : "ies"}`);
+}
+
+function advanceWatermark(currentContent: string, newWatermark: string): void {
+  const lines = currentContent.split("\n");
+  const header = `<!-- consolidated_through: ${newWatermark} -->`;
+  if (lines[0] && lines[0].startsWith("<!-- consolidated_through:")) {
+    lines[0] = header;
+  } else {
+    lines.unshift(header, "");
+  }
+  const tmp = RAW_FILE + ".tmp";
+  writeFileSync(tmp, lines.join("\n"));
+  renameSync(tmp, RAW_FILE);
+}
+
+// ── DeepSeek (Anthropic-compatible) ──────────────────────────────────────
+
+async function deepseek(systemPrompt: string, userPrompt: string): Promise<string> {
+  const key = process.env.STUDIORUNNER_AI_API_KEY;
+  if (!key) throw new Error("STUDIORUNNER_AI_API_KEY not set");
+  const r = await fetch("https://api.deepseek.com/anthropic/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`DeepSeek HTTP ${r.status}: ${body}`);
+  }
+  const j = await r.json() as { content?: Array<{ type: string; text?: string }> };
+  return (j.content ?? []).map((b) => b.text ?? "").join("").trim();
+}
+
+// ── Lifecycle ────────────────────────────────────────────────────────────
+
+function startListening(): void {
+  if (listening) return;
+  if (!memoBinding || !askBinding) {
+    throw new Error("learnTwoBindings() must run first");
+  }
+  listening = true;
+  startMicRecorder();
+  startDawRecorder();
+  attachMidiGate();
+  void memoWorker();
+  void askWorker();
+  void consolidationWorker();
+}
+
+function stopListening(): void {
+  if (!listening) return;
+  listening = false;
+  activeBinding = null;
+  stopMicRecorder();
+  midiPorts.forEach((p) => { try { p.removeAllListeners("message"); } catch { /* ok */ } });
+  nudgeMemo();
+  nudgeAsk();
+  nudgeConsolidation();
+  stopDawRecorder();
+}
+
+// ── Prune subcommand ─────────────────────────────────────────────────────
+
+function prune(): void {
+  if (!existsSync(RAW_FILE)) {
+    console.error("Nothing to prune (raw stream does not exist).");
+    return;
+  }
+  const content = readFileSync(RAW_FILE, "utf-8");
+  const { watermark, entries } = parseRaw(content);
+  if (watermark === "none") {
+    console.error("Nothing has been consolidated yet — nothing to prune.");
+    return;
+  }
+  const kept = entries.filter((e) => e.ts > watermark);
+  const dropped = entries.length - kept.length;
+  const header = `<!-- consolidated_through: ${watermark} -->`;
+  const body = kept.map((e) => `${e.body}\n---`).join("\n\n");
+  const out = body.length > 0 ? `${header}\n\n${body}\n` : `${header}\n\n`;
+  const tmp = RAW_FILE + ".tmp";
+  writeFileSync(tmp, out);
+  renameSync(tmp, RAW_FILE);
+  console.error(`pruned ${dropped} consolidated entr${dropped === 1 ? "y" : "ies"} from raw stream`);
+}
+
+// ── Bootstrap ────────────────────────────────────────────────────────────
 
 if (import.meta.main) {
-  const pendingEntries: Entry[] = [];
+  if (process.argv[2] === "prune") {
+    ensureLayout();
+    prune();
+    process.exit(0);
+  }
 
-  const server = new Server(
-    { name: "studio-runner", version: "1.0.0" },
-    { capabilities: { tools: {} } },
-  );
+  if (!process.env.STUDIORUNNER_AI_API_KEY) {
+    console.error("STUDIORUNNER_AI_API_KEY is required — export it before starting studio-runner.");
+    process.exit(1);
+  }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: "check_speech",
-        description:
-          "Return any new speech-to-text entries captured since the last call.",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "start_listening",
-        description: "Resume the background microphone listener.",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "stop_listening",
-        description: "Pause the background listener.",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "get_status",
-        description: "Return listener status and pending entry count.",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "get_memo",
-        description: "Read back the current session memo.",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "take_screenshot",
-        description: "Manually capture a full-screen screenshot now.",
-        inputSchema: { type: "object", properties: {} },
-      },
-    ],
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    switch (request.params.name) {
-      case "check_speech": {
-        const drained = pendingEntries.splice(0, pendingEntries.length);
-        return {
-          content: [{ type: "text", text: JSON.stringify({ entries: drained }) }],
-        };
-      }
-
-      case "start_listening": {
-        ensureMemo();
-        await startListening((entry) => {
-          pendingEntries.push(entry);
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ status: "listening", memo: memoFile() }),
-            },
-          ],
-        };
-      }
-
-      case "stop_listening": {
-        stopListening();
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                status: "stopped",
-                pending: pendingEntries.length,
-              }),
-            },
-          ],
-        };
-      }
-
-      case "get_status": {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                listening: isListening(),
-                pending: pendingEntries.length,
-                memo: memoFile(),
-                model: WHISPER_MODEL.split("/").pop(),
-                projectRoot: MEMO_DIR.replace(/\/memos$/, ""),
-              }),
-            },
-          ],
-        };
-      }
-
-      case "get_memo": {
-        const mf = memoFile();
-        if (existsSync(mf)) {
-          const content = readFileSync(mf, "utf-8");
-          return { content: [{ type: "text", text: content }] };
-        }
-        return { content: [{ type: "text", text: "(no memo yet)" }] };
-      }
-
-      case "take_screenshot": {
-        const timestamp = ts();
-        const relPath = `screenshots/${timestamp}.png`;
-        const absPath = join(MEMO_DIR, relPath);
-        ensureMemo();
-        await takeScreenshot(absPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ screenshot: relPath, timestamp }),
-            },
-          ],
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${request.params.name}`);
-    }
-  });
-
-  // Bootstrap
-  const mf = ensureMemo();
-  await learnMidiBinding();
-  await startListening((entry) => {
-    pendingEntries.push(entry);
-  });
-
-  process.on("SIGINT", () => { stopListening(); shutdownMidi(); });
-  process.on("SIGTERM", () => { stopListening(); shutdownMidi(); });
-
+  ensureLayout();
   console.error(
-    `studio-runner MCP started  model=${WHISPER_MODEL.split("/").pop()}  memo=${mf}`,
+    `studio-runner  notes=${NOTES_FILE}  whisper=${WHISPER_MODEL.split("/").pop()}  deepseek=${DEEPSEEK_MODEL}`,
   );
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await learnTwoBindings();
+  console.error("Listening — memo to log, ask to query. Ctrl+C to stop.");
+  startListening();
+
+  let shuttingDown = false;
+  function shutdown(): void {
+    if (shuttingDown) process.exit(1);
+    shuttingDown = true;
+    process.stderr.write("\nshutting down...\n");
+    try { stopListening(); } catch { /* ok */ }
+    try { shutdownMidi(); } catch { /* ok */ }
+    setTimeout(() => process.exit(0), 200).unref();
+  }
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
