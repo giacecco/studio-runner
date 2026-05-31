@@ -35,7 +35,7 @@ const MIC_GAIN_DB = parseInt(process.env.STUDIO_MIC_GAIN || "25", 10);
 const SILENCE_THRESHOLD_DB = parseFloat(process.env.STUDIO_VAD_THRESHOLD || "-50");
 export const WHISPER_MODEL =
   process.env.WHISPER_MODEL ||
-  "/opt/homebrew/share/whisper-cpp/models/ggml-large-v3-turbo-q5_0.bin";
+  "/opt/homebrew/share/whisper-cpp/models/ggml-medium.en.bin";
 export const WHISPER_LANG = process.env.WHISPER_LANG || "en";
 
 // DAW audio capture (CD quality, recorded from a virtual loopback device).
@@ -79,9 +79,14 @@ export function appendToMemo(
   text: string,
   screenshotRelPath: string,
   dawAudioRelPath?: string,
+  dawText?: string,
 ): void {
-  const audioLine = dawAudioRelPath ? `\n[DAW audio](${dawAudioRelPath})\n` : "";
-  const entry = `\n## ${timestamp}\n\n![screenshot](${screenshotRelPath})\n${audioLine}\n**Gianfranco:** ${text}\n\n---\n`;
+  // Heading uses just HH:MM:SS — the date is already in the file title
+  // and filename, so repeating it on every entry is noise.
+  const clock = `${timestamp.slice(6, 8)}:${timestamp.slice(8, 10)}:${timestamp.slice(10, 12)}`;
+  const audioLine = dawAudioRelPath ? `[DAW audio](${dawAudioRelPath})\n` : "";
+  const dawLine = dawText && dawText.length > 0 ? `**DAW:** ${dawText}\n` : "";
+  const entry = `\n## ${clock}\n![screenshot](${screenshotRelPath})\n${audioLine}${dawLine}**Gianfranco:** ${text}\n\n---\n`;
   appendFileSync(memoFile(), entry);
 }
 
@@ -220,6 +225,7 @@ export interface Entry {
   text: string;
   screenshotRelPath: string;
   dawAudioRelPath?: string;
+  dawText?: string;
 }
 
 // ── Listener loop ────────────────────────────────────────────────────────
@@ -248,78 +254,127 @@ export function stopListening(): void {
   stopDawRecorder();
 }
 
+interface MicCapture {
+  tmpPath: string;
+  utteranceEndMs: number;
+}
+
+async function captureOneUtterance(): Promise<MicCapture | null> {
+  const tmpPath = `/tmp/studio-runner-${Date.now()}.wav`;
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([
+      "sox", "-d", "-r", "16000", "-c", "1", "-b", "16", tmpPath,
+      "gain", String(MIC_GAIN_DB),
+      "silence", "1", "0.3", `${SILENCE_THRESHOLD_DB}d`,
+      "1", `${String(SILENCE_GAP)}.0`, `${SILENCE_THRESHOLD_DB}d`,
+    ], { stderr: "ignore" });
+  } catch (err) {
+    console.error("Mic spawn failed:", err);
+    return null;
+  }
+  currentSoxProc = proc;
+  const cutoff = setTimeout(
+    () => proc.kill(),
+    MAX_UTTERANCE_CHUNKS * 1000,
+  );
+  try {
+    await proc.exited;
+  } finally {
+    clearTimeout(cutoff);
+    if (currentSoxProc === proc) currentSoxProc = null;
+  }
+  return { tmpPath, utteranceEndMs: Date.now() };
+}
+
+async function processUtterance(
+  cap: MicCapture,
+  lastText: string,
+  onEntry?: (entry: Entry) => void,
+): Promise<string> {
+  const text = await transcribe(cap.tmpPath);
+
+  if (text.length === 0 || text === lastText) {
+    try { unlinkSync(cap.tmpPath); } catch { /* ok */ }
+    // duplicate: reset guard so same phrase can reappear
+    return text.length > 0 ? "" : lastText;
+  }
+
+  const audioDurationSec = await getAudioDuration(cap.tmpPath);
+  const utteranceStartMs = cap.utteranceEndMs - audioDurationSec * 1000;
+  const timestamp = ts(new Date(utteranceStartMs));
+  const screenshotRelPath = `screenshots/${timestamp}.png`;
+  const dawAudioRelPath = `audio/${timestamp}.wav`;
+
+  try { unlinkSync(cap.tmpPath); } catch { /* ok */ }
+  await takeScreenshot(join(MEMO_DIR, screenshotRelPath));
+  const hasDaw = await extractDawClip(
+    utteranceStartMs,
+    cap.utteranceEndMs,
+    join(MEMO_DIR, dawAudioRelPath),
+  );
+  const dawText = hasDaw ? await transcribe(join(MEMO_DIR, dawAudioRelPath)) : "";
+  appendToMemo(
+    timestamp,
+    text,
+    screenshotRelPath,
+    hasDaw ? dawAudioRelPath : undefined,
+    dawText.length > 0 ? dawText : undefined,
+  );
+  await resetDawRecorder();
+
+  const entry: Entry = {
+    timestamp,
+    text,
+    screenshotRelPath,
+    ...(hasDaw ? { dawAudioRelPath } : {}),
+    ...(dawText.length > 0 ? { dawText } : {}),
+  };
+  onEntry?.(entry);
+  return text;
+}
+
 async function listenerLoop(onEntry?: (entry: Entry) => void): Promise<void> {
   let lastText = "";
+  // Pipeline: while we're processing utterance N (transcribe + screenshot +
+  // DAW extract + DAW reset), the next sox is already capturing utterance
+  // N+1. This eliminates the "first few seconds lost" gap that occurs if
+  // we wait for post-processing before re-arming the mic.
+  let pendingCapture: Promise<MicCapture | null> = captureOneUtterance();
 
   while (listening) {
-    const tmpPath = `/tmp/studio-runner-${Date.now()}.wav`;
+    let cap: MicCapture | null;
     try {
-      currentSoxProc = Bun.spawn([
-        "sox", "-d", "-r", "16000", "-c", "1", "-b", "16", tmpPath,
-        "gain", String(MIC_GAIN_DB),
-        "silence", "1", "0.3", `${SILENCE_THRESHOLD_DB}d`,
-        "1", `${String(SILENCE_GAP)}.0`, `${SILENCE_THRESHOLD_DB}d`,
-      ], { stderr: "ignore" });
-
-      // Hard cap: kill after MAX_UTTERANCE_CHUNKS seconds of continuous speech
-      const cutoff = setTimeout(
-        () => currentSoxProc?.kill(),
-        MAX_UTTERANCE_CHUNKS * 1000,
-      );
-      await currentSoxProc.exited;
-      clearTimeout(cutoff);
-      currentSoxProc = null;
-      const utteranceEndMs = Date.now();
-
-      if (!listening) {
-        try { unlinkSync(tmpPath); } catch { /* ok */ }
-        break;
-      }
-
-      const text = await transcribe(tmpPath);
-
-      if (text.length > 0 && text !== lastText) {
-        lastText = text;
-        const audioDurationSec = await getAudioDuration(tmpPath);
-        const utteranceStartMs = utteranceEndMs - audioDurationSec * 1000;
-        const timestamp = ts(new Date(utteranceStartMs));
-        const screenshotRelPath = `screenshots/${timestamp}.png`;
-        const dawAudioRelPath = `audio/${timestamp}.wav`;
-
-        try { unlinkSync(tmpPath); } catch { /* ok */ }
-        await takeScreenshot(join(MEMO_DIR, screenshotRelPath));
-        const hasDaw = await extractDawClip(
-          utteranceStartMs,
-          utteranceEndMs,
-          join(MEMO_DIR, dawAudioRelPath),
-        );
-        appendToMemo(
-          timestamp,
-          text,
-          screenshotRelPath,
-          hasDaw ? dawAudioRelPath : undefined,
-        );
-        await resetDawRecorder();
-
-        const entry: Entry = {
-          timestamp,
-          text,
-          screenshotRelPath,
-          ...(hasDaw ? { dawAudioRelPath } : {}),
-        };
-        onEntry?.(entry);
-        console.error(`[${timestamp}] ${text}`);
-      } else {
-        if (text.length > 0) lastText = ""; // duplicate: reset so same phrase can reappear
-        try { unlinkSync(tmpPath); } catch { /* ok */ }
-      }
+      cap = await pendingCapture;
     } catch (err) {
-      console.error("Listener error:", err);
-      currentSoxProc = null;
-      try { unlinkSync(tmpPath); } catch { /* ok */ }
+      console.error("Mic capture error:", err);
       await new Promise((r) => setTimeout(r, 500));
+      pendingCapture = listening ? captureOneUtterance() : Promise.resolve(null);
+      continue;
+    }
+
+    if (!cap || !listening) {
+      if (cap) try { unlinkSync(cap.tmpPath); } catch { /* ok */ }
+      break;
+    }
+
+    // Re-arm the mic immediately so we don't miss the start of the next
+    // utterance while this one is being processed.
+    pendingCapture = captureOneUtterance();
+
+    try {
+      lastText = await processUtterance(cap, lastText, onEntry);
+    } catch (err) {
+      console.error("Processing error:", err);
+      try { unlinkSync(cap.tmpPath); } catch { /* ok */ }
     }
   }
+
+  // Drain any in-flight capture so the temp file doesn't linger.
+  try {
+    const final = await pendingCapture;
+    if (final) try { unlinkSync(final.tmpPath); } catch { /* ok */ }
+  } catch { /* ok */ }
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────
