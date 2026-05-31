@@ -25,7 +25,9 @@ startListening((entry) => {
   console.log(`[${entry.timestamp}] ${entry.text}`);
 });
 
-process.on("SIGINT", () => {
+function shutdown() {
   process.stderr.write("\n");
   stopListening();
-});
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
