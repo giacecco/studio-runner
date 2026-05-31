@@ -6,12 +6,13 @@ Speak your thoughts while working and studio-runner transcribes them, takes a sc
 
 ## How it works
 
-1. Waits silently until you speak (VAD threshold at −50 dB RMS, 0.3s trigger)
-2. Records continuously until 3s of silence — one clean utterance per capture
-3. Transcribes via whisper-cpp on the GPU (large-v3-turbo model, Apple Silicon)
-4. Captures a full-screen screenshot
-5. **Captures the DAW audio**: in parallel, a second sox process records your DAW output from a virtual loopback device (BlackHole 2ch) at CD quality. Each memo entry includes a WAV with the 10 seconds (configurable) before you started talking through to the end of your utterance.
-6. Appends a timestamped entry to `memos/YYYY-MM-DD.md`
+1. On startup, prompts you to press the MIDI button/pedal you want to use as push-to-talk — any controller already on your CoreMIDI bus works (sustain pedal, an unused pad, etc.)
+2. A rolling mic recorder runs continuously in raw PCM so the audio device is always hot — no cold-start latency eating your first words
+3. Hold the button → speak → release. The mic clip is extracted from the rolling buffer over `[press − pre-roll, release + post-roll]`
+4. Transcribes via whisper-cpp on the GPU (medium.en model, Apple Silicon)
+5. Captures a full-screen screenshot
+6. **Captures the DAW audio**: in parallel, a second sox process records your DAW output from a virtual loopback device (BlackHole 2ch) at CD quality. Each memo entry includes a WAV with the 10 seconds (configurable) before you started talking through to the end of your utterance.
+7. Appends a timestamped entry to `memos/YYYY-MM-DD.md`
 
 Everything runs locally — no API keys, no internet, no data leaves your machine.
 
@@ -20,11 +21,12 @@ Everything runs locally — no API keys, no internet, no data leaves your machin
 - macOS with Apple Silicon
 - [Bun](https://bun.sh)
 - `brew install sox whisper-cpp blackhole-2ch`
-- whisper model: `ggml-large-v3-turbo-q5_0.bin` at `/opt/homebrew/share/whisper-cpp/models/`
+- whisper model: `ggml-medium.en.bin` at `/opt/homebrew/share/whisper-cpp/models/`
 
   ```bash
-  whisper-cpp-download-ggml-model large-v3-turbo-q5_0
+  whisper-cpp-download-ggml-model medium.en
   ```
+- A MIDI controller / pedal visible to CoreMIDI (anything macOS shows in Audio MIDI Setup → MIDI Studio). The DAW can keep using the same device — CoreMIDI broadcasts, so we tap it passively.
 
 ### One-time DAW routing setup
 
@@ -44,7 +46,7 @@ cd /path/to/your/daw-project
 STUDIO_PROJECT_ROOT=$(pwd) bun run /path/to/studio-runner/listen.ts
 ```
 
-Speak your comments while working. Press Ctrl+C to stop.
+On first run you'll see `Press and hold the button/pedal you want to use for push-to-talk...` — press and hold any MIDI button, then release. The bound message is reported and remains the gate for the session. From then on: hold to speak, release to commit the utterance. Ctrl+C to stop.
 
 ## Claude Code integration
 
@@ -78,10 +80,11 @@ Claude can then call `check_speech` to retrieve spoken comments, `get_memo` to r
 | Variable | Default | Purpose |
 |---|---|---|
 | `STUDIO_PROJECT_ROOT` | current directory | Where `memos/` is created |
-| `WHISPER_MODEL` | `…/ggml-large-v3-turbo-q5_0.bin` | Alternative model path |
+| `WHISPER_MODEL` | `…/ggml-medium.en.bin` | Alternative model path |
 | `WHISPER_LANG` | `en` | Language code (`nl` for Dutch) |
-| `STUDIO_VAD_THRESHOLD` | `-50` | RMS dB threshold for voice activity detection |
-| `STUDIO_MIC_GAIN` | `25` | Microphone gain in dB applied before VAD |
+| `STUDIO_MIC_GAIN` | `25` | Microphone gain in dB applied to the rolling mic buffer |
+| `STUDIO_MIC_PREROLL` | `0.5` | Seconds of mic audio retained before the button-down event |
+| `STUDIO_MIC_POSTROLL` | `0.5` | Seconds of mic audio retained after the button-up event (covers the tail of the last syllable) |
 | `STUDIO_DAW_DEVICE` | `BlackHole 2ch` | CoreAudio input device for DAW capture. Set to `""` to disable. |
 | `STUDIO_DAW_PREROLL` | `10` | Seconds of DAW audio retained before each utterance |
 
