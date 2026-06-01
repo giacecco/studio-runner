@@ -1,5 +1,9 @@
 node_modules/
+.env
+.claude/
 memos/
+.studiorunner.d/
+studiorunner.md
 
 # macOS
 .DS_Store

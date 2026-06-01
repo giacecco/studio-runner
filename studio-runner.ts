@@ -24,6 +24,32 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+// Load .env from the script's directory before reading any env var. Bun's
+// auto-load reads .env from process.cwd(), which here is the user's music
+// project folder, not this repo — so the auto-load would miss the key.
+(() => {
+  const envPath = join(import.meta.dir, ".env");
+  if (!existsSync(envPath)) return;
+  try {
+    const content = readFileSync(envPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq < 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (!(key in process.env)) process.env[key] = value;
+    }
+  } catch (err) {
+    console.error(`failed to read ${envPath}:`, err);
+  }
+})();
+
 // ── Configuration ────────────────────────────────────────────────────────
 
 const PROJECT_ROOT = process.env.STUDIO_PROJECT_ROOT || process.cwd();
