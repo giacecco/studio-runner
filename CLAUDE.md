@@ -45,6 +45,7 @@ The `prune` subcommand drops already-consolidated raw entries.
 | `STUDIO_PROJECT_ROOT` | `cwd` | Project folder where `studiorunner.md` lives |
 | `STUDIO_NOTES_FILE` | `studiorunner.md` | Consolidated state filename |
 | `STUDIO_RUNNER_DIR` | `.studiorunner.d` | Hidden directory for raw stream, chat log, audio, screenshots |
+| `STUDIO_SYSTEM_FILE` | `system.md` | Filename (inside `STUDIO_RUNNER_DIR`) of the per-project context prepended to every DeepSeek system prompt |
 | `STUDIO_TTS` | `1` | `0` disables `say` playback of assistant replies |
 | `STUDIO_TTS_VOICE` | unset | Passed through to `say -v` if set |
 | `STUDIO_TTS_VOLUME` | unset | Per-utterance volume 0–100 (prepends `[[volm X]]` to the `say` input where X = value/100). Independent of system output volume. |
@@ -63,6 +64,7 @@ The `prune` subcommand drops already-consolidated raw entries.
 <STUDIO_PROJECT_ROOT>/
   studiorunner.md              ← consolidated state — read this
   .studiorunner.d/
+    system.md                  ← per-project context, prepended to every DeepSeek system prompt
     raw.md                     ← append-only raw stream, with watermark
     chat.md                    ← Q&A transcript
     screenshots/
@@ -138,6 +140,25 @@ DAW's session files.
   answer is logged to stderr, appended to `.studiorunner.d/chat.md`,
   and spoken via `say` (fire-and-forget, so the user can immediately
   hold the memo button again while the answer is being read).
+- **Three-layer system prompt** (assembled inside `deepseek()`):
+  1. `BASE_ROLE` — hardcoded constant in the script defining the
+     studio-runner role, brevity, HH:MM-timestamp citation. Always present;
+     can't be accidentally deleted by editing project files.
+  2. `.studiorunner.d/system.md` — user-edited per-project context
+     (track name, BPM, key, references, constraints, collaborators,
+     deadlines). `ensureLayout()` creates a guidance stub on first run.
+  3. Call-specific system prompt — consolidation format rules, or the
+     ask-flow "use the context, say so if it's missing" guidance.
+
+  All three are joined with `\n\n---\n\n` separators. `studiorunner.md`
+  itself is NOT in the system prompt — it lives in the user message
+  (along with the raw-tail) because it's the dynamic state, not the
+  framing.
+- **Speaker label in raw entries**: each utterance is logged as `The
+  Producer: <text>` (and `DAW: <text>` if a DAW transcript exists). The
+  label distinguishes the user's mic from the DAW transcript when
+  DeepSeek reads the raw stream; no actual speaker-identification
+  happens — the script just labels what it knows came from the mic.
 - **DeepSeek client uses the Anthropic-compatible endpoint**
   (`/anthropic/v1/messages`, `x-api-key`, `anthropic-version:
   2023-06-01`, `system` + `messages` + `max_tokens`). The OpenAI-style

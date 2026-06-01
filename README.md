@@ -22,7 +22,10 @@ the track, and reads the reply back via `say`.
    `.studiorunner.d/raw.md`.
 4. A background DeepSeek call distils the raw stream into a curated
    `studiorunner.md` with sections **TODO**, **Track notes**,
-   **Open questions**, **Session timeline**.
+   **Open questions**, **Session timeline**. Anything you put in
+   `.studiorunner.d/system.md` (created on first run) is prepended to
+   every DeepSeek call — that's where track-level context, references,
+   and preferences live.
 5. Hold **ask** → speak → release. DeepSeek answers from the curated
    state plus any unconsolidated tail. The reply prints, appends to
    `.studiorunner.d/chat.md`, and is spoken back via `say`.
@@ -105,6 +108,7 @@ That removes every raw entry up to the consolidation watermark.
 | `STUDIO_PROJECT_ROOT` | current directory | Project folder where `studiorunner.md` lives |
 | `STUDIO_NOTES_FILE` | `studiorunner.md` | Consolidated state filename |
 | `STUDIO_RUNNER_DIR` | `.studiorunner.d` | Hidden directory for raw stream, chat log, audio, screenshots |
+| `STUDIO_SYSTEM_FILE` | `system.md` | Per-project context file (inside `STUDIO_RUNNER_DIR`). Edited by you; prepended to every DeepSeek call. |
 | `STUDIO_TTS` | `1` | `0` disables `say` playback of assistant replies |
 | `STUDIO_TTS_VOICE` | unset | Passed through to `say -v` if set |
 | `STUDIO_TTS_VOLUME` | unset | Per-utterance assistant volume, 0–100. Independent of system output volume. |
@@ -123,6 +127,7 @@ That removes every raw entry up to the consolidation watermark.
 <STUDIO_PROJECT_ROOT>/
   studiorunner.md            ← consolidated state — read this
   .studiorunner.d/
+    system.md                ← per-project context, edited by you, prepended to every DeepSeek prompt
     raw.md                   ← append-only raw stream, with watermark
     chat.md                  ← Q&A transcript
     screenshots/

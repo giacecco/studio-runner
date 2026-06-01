@@ -58,6 +58,7 @@ const NOTES_FILE = join(PROJECT_ROOT, process.env.STUDIO_NOTES_FILE || "studioru
 const RUNNER_DIR = join(PROJECT_ROOT, RUNNER_DIR_NAME);
 const RAW_FILE = join(RUNNER_DIR, "raw.md");
 const CHAT_FILE = join(RUNNER_DIR, "chat.md");
+const SYSTEM_FILE = join(RUNNER_DIR, process.env.STUDIO_SYSTEM_FILE || "system.md");
 const SCREENSHOTS_DIR = join(RUNNER_DIR, "screenshots");
 const AUDIO_DIR = join(RUNNER_DIR, "audio");
 
@@ -86,6 +87,14 @@ const PRUNE_ASSETS = process.env.STUDIO_PRUNE_ASSETS === "1";
 
 const MIC_BYTES_PER_SEC = 16000 * 1 * 2;
 const DAW_BYTES_PER_SEC = 44100 * 2 * 2;
+
+// Hardcoded role baked into every DeepSeek call (consolidation + ask).
+// Stays in the script so it can't be accidentally edited away in
+// .studiorunner.d/system.md, which is for per-project context only.
+const BASE_ROLE =
+`You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (studiorunner.md) up to date from the raw stream, and you answer the Producer's spoken questions about the session.
+
+Be brief and practical. Short sentences. No preamble. When you mention a past note, cite its time in HH:MM form. The Producer is listening through speakers in a live mix context — they can't read long answers and don't want them.`;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -119,6 +128,28 @@ function ensureLayout(): void {
   }
   if (!existsSync(RAW_FILE)) {
     writeFileSync(RAW_FILE, "<!-- consolidated_through: none -->\n\n");
+  }
+  if (!existsSync(SYSTEM_FILE)) {
+    writeFileSync(
+      SYSTEM_FILE,
+`# Project context
+
+Edit this file with general context about this music project. Its
+contents are prepended to every DeepSeek system prompt — both
+consolidation and Q&A — so the assistant gets your context on every
+call without you having to repeat it.
+
+Useful to record:
+- Track name, BPM, key signature, time signature
+- Genre, sonic references, mood
+- Production constraints (e.g. "no autotune", "vocals tracked at Studio X")
+- Collaborators (artist, engineer, label)
+- Deadlines and milestones
+- Strong preferences worth holding the line on
+
+Delete this guidance block once you've added your own.
+`,
+    );
   }
 }
 
@@ -495,7 +526,7 @@ function appendRawEntry(e: RawEntryInput): void {
   ];
   if (e.audioRel) lines.push(`audio: ${e.audioRel}`);
   if (e.screenshotRel) lines.push(`screenshot: ${e.screenshotRel}`);
-  lines.push(`Gianfranco: ${e.micText}`);
+  lines.push(`The Producer: ${e.micText}`);
   if (e.dawText && e.dawText.length > 0) lines.push(`DAW: ${e.dawText}`);
   lines.push("---");
   lines.push("");
@@ -800,6 +831,20 @@ function advanceWatermark(currentContent: string, newWatermark: string): void {
 async function deepseek(systemPrompt: string, userPrompt: string): Promise<string> {
   const key = process.env.STUDIORUNNER_AI_API_KEY;
   if (!key) throw new Error("STUDIORUNNER_AI_API_KEY not set");
+
+  // System prompt is three layers separated by `---` rules:
+  //   1. BASE_ROLE (hardcoded, always present)
+  //   2. project context from system.md (user-edited, may be empty)
+  //   3. call-specific rules passed by the caller
+  let projectContext = "";
+  if (existsSync(SYSTEM_FILE)) {
+    try { projectContext = readFileSync(SYSTEM_FILE, "utf-8").trim(); }
+    catch { /* ok */ }
+  }
+  const fullSystem = [BASE_ROLE, projectContext, systemPrompt]
+    .filter((s) => s && s.length > 0)
+    .join("\n\n---\n\n");
+
   const r = await fetch("https://api.deepseek.com/anthropic/v1/messages", {
     method: "POST",
     headers: {
@@ -810,7 +855,7 @@ async function deepseek(systemPrompt: string, userPrompt: string): Promise<strin
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       max_tokens: 4096,
-      system: systemPrompt,
+      system: fullSystem,
       messages: [{ role: "user", content: userPrompt }],
     }),
   });
