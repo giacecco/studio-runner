@@ -47,6 +47,7 @@ The `prune` subcommand drops already-consolidated raw entries.
 | `STUDIO_RUNNER_DIR` | `.studiorunner.d` | Hidden directory for raw stream, chat log, audio, screenshots |
 | `STUDIO_TTS` | `1` | `0` disables `say` playback of assistant replies |
 | `STUDIO_TTS_VOICE` | unset | Passed through to `say -v` if set |
+| `STUDIO_TTS_VOLUME` | unset | Per-utterance volume 0–100 (prepends `[[volm X]]` to the `say` input where X = value/100). Independent of system output volume. |
 | `STUDIO_PRUNE_ASSETS` | `0` | `1` deletes audio + screenshot for each entry as it gets consolidated |
 | `WHISPER_MODEL` | `…/ggml-medium.en.bin` | Whisper model path |
 | `WHISPER_LANG` | `en` | Language code; set to `nl` for Dutch |

@@ -107,6 +107,7 @@ That removes every raw entry up to the consolidation watermark.
 | `STUDIO_RUNNER_DIR` | `.studiorunner.d` | Hidden directory for raw stream, chat log, audio, screenshots |
 | `STUDIO_TTS` | `1` | `0` disables `say` playback of assistant replies |
 | `STUDIO_TTS_VOICE` | unset | Passed through to `say -v` if set |
+| `STUDIO_TTS_VOLUME` | unset | Per-utterance assistant volume, 0–100. Independent of system output volume. |
 | `STUDIO_PRUNE_ASSETS` | `0` | `1` deletes audio + screenshot for each entry as it's consolidated |
 | `WHISPER_MODEL` | `…/ggml-medium.en.bin` | Alternative whisper model path |
 | `WHISPER_LANG` | `en` | Language code (`nl` for Dutch) |

@@ -78,6 +78,10 @@ const DAW_ROLLING_PATH = "/tmp/studio-runner-daw-rolling.raw";
 const DEEPSEEK_MODEL = process.env.STUDIO_DEEPSEEK_MODEL || "deepseek-chat";
 const TTS_ENABLED = (process.env.STUDIO_TTS ?? "1") !== "0";
 const TTS_VOICE = process.env.STUDIO_TTS_VOICE;
+// 0–100. Internally passed to `say` as `[[volm X]]` where X is 0.0–1.0.
+const TTS_VOLUME = process.env.STUDIO_TTS_VOLUME
+  ? Math.max(0, Math.min(100, parseFloat(process.env.STUDIO_TTS_VOLUME))) / 100
+  : undefined;
 const PRUNE_ASSETS = process.env.STUDIO_PRUNE_ASSETS === "1";
 
 const MIC_BYTES_PER_SEC = 16000 * 1 * 2;
@@ -615,12 +619,24 @@ function appendChat(question: string, answer: string): void {
   appendFileSync(CHAT_FILE, block);
 }
 
-function speak(text: string): void {
-  const args = TTS_VOICE ? ["-v", TTS_VOICE, text] : [text];
+async function speak(text: string): Promise<void> {
+  // Modern macOS voices ignore the [[volm X]] inline directive, so we render
+  // `say` to a temp file and play it with `afplay -v <0..1>`, whose -v flag
+  // is honoured uniformly across voices.
+  const tmpWav = `/tmp/studio-runner-tts-${Date.now()}.aiff`;
+  const sayArgs: string[] = [];
+  if (TTS_VOICE) sayArgs.push("-v", TTS_VOICE);
+  sayArgs.push("-o", tmpWav, text);
   try {
-    Bun.spawn(["say", ...args], { stdout: "ignore", stderr: "ignore" });
+    const sayProc = Bun.spawn(["say", ...sayArgs], { stdout: "ignore", stderr: "ignore" });
+    await sayProc.exited;
+    if (!existsSync(tmpWav)) return;
+    const afArgs = TTS_VOLUME !== undefined ? ["-v", String(TTS_VOLUME), tmpWav] : [tmpWav];
+    const afProc = Bun.spawn(["afplay", ...afArgs], { stdout: "ignore", stderr: "ignore" });
+    afProc.exited.then(() => { try { unlinkSync(tmpWav); } catch { /* ok */ } });
   } catch (err) {
-    console.error("`say` failed:", err);
+    console.error("TTS failed:", err);
+    try { unlinkSync(tmpWav); } catch { /* ok */ }
   }
 }
 
