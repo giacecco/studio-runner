@@ -47,13 +47,14 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | File | Role |
 |---|---|
 | `AppDelegate.swift` | `@main` entry point; creates the Coordinator + StatusItemController. |
-| `Coordinator.swift` | Top-level lifecycle: bootstrap, start/stop session, re-learn buttons, choose project folder. Owns every long-lived component below. |
+| `Coordinator.swift` | Top-level lifecycle: bootstrap, start/stop session, re-learn buttons, choose project folder, settings window, hot-restart of the DAW recorder when the device changes. Owns every long-lived component below. |
 | `StatusItem.swift` | `NSStatusItem` with state-driven SF Symbol icon and dynamic menu. |
+| `SettingsWindow.swift` | Modeless `NSWindow` with two controls: DAW input device picker (pre-selects BlackHole 2ch when present) and DeepSeek voice volume slider. Writes through to `Config.setDawDeviceName` / `Config.setTtsVolumePercent` (UserDefaults). |
 | `SessionState.swift` | State enum (`idle`, `learningMemo`, `recordingMemo`, `processingMemo`, `recordingAsk`, `askThinking`, `askSpeaking`, `consolidating`, `notReady`, `error`). Drives the icon. |
-| `Config.swift` / `EnvFile.swift` | Tunables resolved from process env → `.env` files → defaults. `.env` is loaded from `~/Library/Application Support/StudioRunner/.env`, then the project root, then a sibling of the `.app`. |
+| `Config.swift` / `EnvFile.swift` | Tunables resolved from UserDefaults (settings window) → process env → `.env` files → defaults. `.env` is loaded from `~/Library/Application Support/StudioRunner/.env`, then the project root, then a sibling of the `.app`. |
 | `Layout.swift` | Ensures the project-root directory layout (`studiorunner.md`, `.studiorunner.d/...`). |
-| `MIDI.swift` | CoreMIDI client, learn flow (single press + release cycle), push-to-talk gate, JSON persistence of bindings under `.studiorunner.d/midi-bindings.json`. |
-| `CoreAudioDevice.swift` | Find a CoreAudio input device by display name (used to locate BlackHole 2ch). |
+| `MIDI.swift` | CoreMIDI client, learn flow (single press + release cycle), push-to-talk gate, JSON persistence of bindings under `.studiorunner.d/midi-bindings.json` (so the next launch goes straight to listening). |
+| `CoreAudioDevice.swift` | Finds a CoreAudio input device by display name and enumerates all available inputs for the settings popup. |
 | `RollingBuffer.swift` | Fixed-size in-memory PCM ring; extraction derives wall-clock window from how many bytes are in the ring. |
 | `MicRecorder.swift` | AVAudioEngine on the default input → convert to 16 kHz mono Int16 → append to ring (with gain). |
 | `DAWRecorder.swift` | AVAudioEngine on a specific input device (`AudioUnitSetProperty(CurrentDevice)`) → 44.1 kHz stereo Int16 ring. |

@@ -1,9 +1,16 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 
-/// Continuously captures the default input device into a 16 kHz mono 16-bit
-/// signed-PCM ring buffer. Applies a linear gain to compensate for low input
-/// levels (mirrors the bun script's `sox gain <dB>` step).
+/// Continuously captures an input device into a 16 kHz mono 16-bit signed-PCM
+/// ring buffer. Applies a linear gain to compensate for low input levels
+/// (mirrors the bun script's `sox gain <dB>` step).
+///
+/// Pass `deviceID: nil` to track the system default input; pass a specific
+/// CoreAudio device ID to pin to a named USB mic / interface input. Pinning
+/// uses the same `AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice)`
+/// dance as `DAWRecorder`.
 final class MicRecorder {
     let buffer: RollingBuffer
 
@@ -13,7 +20,7 @@ final class MicRecorder {
 
     private(set) var isRunning = false
 
-    init(gainDb: Double) throws {
+    init(gainDb: Double, deviceID: AudioDeviceID? = nil) throws {
         guard let target = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: Config.micSampleRate,
@@ -27,6 +34,29 @@ final class MicRecorder {
         self.gainFactor = Float(pow(10.0, gainDb / 20.0))
         self.buffer = RollingBuffer(seconds: Config.micBufferSeconds,
                                     bytesPerSecond: Config.micBytesPerSecond)
+        if let id = deviceID { try setInputDevice(id) }
+    }
+
+    private func setInputDevice(_ deviceID: AudioDeviceID) throws {
+        guard let au = engine.inputNode.audioUnit else {
+            throw NSError(domain: "StudioRunner", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Input node has no underlying audio unit"])
+        }
+        AudioUnitUninitialize(au)
+        var devID = deviceID
+        let status = AudioUnitSetProperty(
+            au,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &devID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw NSError(domain: "StudioRunner", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "AudioUnitSetProperty(CurrentDevice) failed: \(status)"])
+        }
+        AudioUnitInitialize(au)
     }
 
     func start() throws {

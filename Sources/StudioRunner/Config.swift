@@ -57,7 +57,26 @@ enum Config {
     static var micPrerollSec: Double { Double(EnvFile.value("STUDIO_MIC_PREROLL") ?? "") ?? 0.5 }
     static var micPostrollSec: Double { Double(EnvFile.value("STUDIO_MIC_POSTROLL") ?? "") ?? 0.5 }
 
-    static var dawDeviceName: String { EnvFile.value("STUDIO_DAW_DEVICE") ?? "BlackHole 2ch" }
+    private static let micDeviceKey = "micDeviceName"
+    /// Empty string means "follow the system default input device".
+    static var micDeviceName: String {
+        if let v = UserDefaults.standard.string(forKey: micDeviceKey) { return v }
+        return EnvFile.value("STUDIO_MIC_DEVICE") ?? ""
+    }
+    static func setMicDeviceName(_ name: String) {
+        UserDefaults.standard.set(name, forKey: micDeviceKey)
+    }
+
+    private static let dawDeviceKey = "dawDeviceName"
+    /// Order of precedence: UserDefaults (set via Settings…) > env (.env or
+    /// shell) > default. An empty string disables DAW capture entirely.
+    static var dawDeviceName: String {
+        if let v = UserDefaults.standard.string(forKey: dawDeviceKey) { return v }
+        return EnvFile.value("STUDIO_DAW_DEVICE") ?? "BlackHole 2ch"
+    }
+    static func setDawDeviceName(_ name: String) {
+        UserDefaults.standard.set(name, forKey: dawDeviceKey)
+    }
     static var dawPrerollSec: Double { Double(EnvFile.value("STUDIO_DAW_PREROLL") ?? "") ?? 10 }
 
     // Audio formats (constant — match the bun script's behaviour).
@@ -90,10 +109,27 @@ enum Config {
 
     static var ttsEnabled: Bool { (EnvFile.value("STUDIO_TTS") ?? "1") != "0" }
     static var ttsVoiceName: String? { EnvFile.value("STUDIO_TTS_VOICE") }
-    /// 0.0–1.0 (mapped from 0–100 env var). nil means "leave at synthesizer default".
-    static var ttsVolume: Float? {
+
+    private static let ttsVolumeKey = "ttsVolumePercent"
+    /// 0–100. UserDefaults wins over env. nil → leave at synthesizer default.
+    static var ttsVolumePercent: Double? {
+        if let n = UserDefaults.standard.object(forKey: ttsVolumeKey) as? NSNumber {
+            return max(0, min(100, n.doubleValue))
+        }
         guard let raw = EnvFile.value("STUDIO_TTS_VOLUME"), let v = Double(raw) else { return nil }
-        return Float(max(0, min(100, v)) / 100.0)
+        return max(0, min(100, v))
+    }
+    /// 0.0–1.0, derived from `ttsVolumePercent`.
+    static var ttsVolume: Float? {
+        guard let p = ttsVolumePercent else { return nil }
+        return Float(p / 100.0)
+    }
+    static func setTtsVolumePercent(_ percent: Double?) {
+        if let p = percent {
+            UserDefaults.standard.set(max(0, min(100, p)), forKey: ttsVolumeKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: ttsVolumeKey)
+        }
     }
 
     // ── Maintenance ──────────────────────────────────────────────────────

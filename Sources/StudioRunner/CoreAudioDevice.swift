@@ -3,12 +3,27 @@ import Foundation
 
 /// Helpers for finding CoreAudio input devices by name (BlackHole 2ch, etc.).
 enum CoreAudioDevice {
+    struct InputDevice: Hashable {
+        let id: AudioDeviceID
+        let name: String
+    }
+
     static func findInputDevice(named name: String) -> AudioDeviceID? {
         for id in allDeviceIDs() where hasInputChannels(id) {
             let n = deviceName(id) ?? ""
             if n.compare(name, options: .caseInsensitive) == .orderedSame { return id }
         }
         return nil
+    }
+
+    static func listInputDevices() -> [InputDevice] {
+        var result: [InputDevice] = []
+        for id in allDeviceIDs() where hasInputChannels(id) {
+            if let name = deviceName(id), !name.isEmpty {
+                result.append(InputDevice(id: id, name: name))
+            }
+        }
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     static func deviceName(_ id: AudioDeviceID) -> String? {

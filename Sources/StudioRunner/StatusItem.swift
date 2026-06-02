@@ -43,6 +43,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(makeItem("Choose project folder…", #selector(actionChooseFolder)))
         menu.addItem(makeItem("Reveal project in Finder", #selector(actionReveal)))
+        menu.addItem(makeItem("Settings…", #selector(actionSettings), key: ","))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Open studiorunner.md", #selector(actionOpenNotes)))
@@ -111,6 +112,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func actionRelearn() { coordinator.relearnBindings() }
     @objc private func actionChooseFolder() { coordinator.chooseProjectFolder() }
     @objc private func actionReveal() { coordinator.revealProjectInFinder() }
+    @objc private func actionSettings() { coordinator.showSettings() }
     @objc private func actionOpenNotes() { coordinator.openNotes() }
     @objc private func actionOpenChat()  { coordinator.openChat() }
     @objc private func actionOpenRaw()   { coordinator.openRaw() }

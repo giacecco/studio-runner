@@ -17,6 +17,7 @@ final class Coordinator {
     private var memoFlow: MemoFlow?
     private var askFlow: AskFlow?
     private var consolidator: Consolidator?
+    private var settingsWindow: SettingsWindowController?
     private(set) var isRunning = false
 
     private let cursors = Cursors()
@@ -98,9 +99,18 @@ final class Coordinator {
         }
 
         // 3. Mic
+        let micDevID: AudioDeviceID?
+        if Config.micDeviceName.isEmpty {
+            micDevID = nil
+        } else if let id = CoreAudioDevice.findInputDevice(named: Config.micDeviceName) {
+            micDevID = id
+        } else {
+            log("mic device '\(Config.micDeviceName)' not found — falling back to system default")
+            micDevID = nil
+        }
         let micRec: MicRecorder
         do {
-            micRec = try MicRecorder(gainDb: Config.micGainDb)
+            micRec = try MicRecorder(gainDb: Config.micGainDb, deviceID: micDevID)
             try micRec.start()
         } catch {
             state.set(.error("Mic: \(error.localizedDescription)"))
@@ -211,6 +221,37 @@ final class Coordinator {
         } catch {
             state.set(.error("MIDI learn failed: \(error.localizedDescription)"))
             return nil
+        }
+    }
+
+    // MARK: - Settings
+
+    func showSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(coordinator: self)
+        }
+        settingsWindow?.show()
+    }
+
+    /// Called from the settings window when the DAW device name changes. If a
+    /// session is currently running, bounce it so the DAW recorder rebinds.
+    /// Memo + ask flows hold a reference to the old DAW buffer, so a full
+    /// stop / start is the simplest way to swap them out cleanly.
+    func applyDAWDeviceChange() {
+        bounceIfRunning()
+    }
+
+    /// Same idea for the mic input device. MemoFlow and AskFlow both hold the
+    /// mic buffer, so a bounce is the simplest path to a clean swap.
+    func applyMicDeviceChange() {
+        bounceIfRunning()
+    }
+
+    private func bounceIfRunning() {
+        guard isRunning else { return }
+        Task {
+            stopSession()
+            await _startSession()
         }
     }
 
