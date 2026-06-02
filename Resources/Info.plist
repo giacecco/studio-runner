@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Studio Runner</string>
+    <key>CFBundleDisplayName</key>
+    <string>Studio Runner</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.giacecco.studiorunner</string>
+    <key>CFBundleExecutable</key>
+    <string>StudioRunner</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Studio Runner captures your voice for transcription and DAW commentary.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Studio Runner transcribes your voice notes locally via whisper-cpp.</string>
+</dict>
+</plist>

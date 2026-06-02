@@ -1,9 +1,15 @@
-node_modules/
 .env
 .claude/
-memos/
 .studiorunner.d/
 studiorunner.md
+
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+*.xcuserstate
+.vscode/
 
 # macOS
 .DS_Store
