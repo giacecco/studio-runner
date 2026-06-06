@@ -49,14 +49,15 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `AppDelegate.swift` | `@main` entry point; creates the Coordinator + StatusItemController. |
 | `Coordinator.swift` | Top-level lifecycle: bootstrap, start/stop session, re-learn buttons, choose project folder, settings window, hot-restart of the DAW recorder when the device changes. Owns every long-lived component below. |
 | `StatusItem.swift` | `NSStatusItem` with state-driven SF Symbol icon and dynamic menu. |
-| `SettingsWindow.swift` | Modeless `NSWindow` with two controls: DAW input device picker (pre-selects BlackHole 2ch when present) and DeepSeek voice volume slider. Writes through to `Config.setDawDeviceName` / `Config.setTtsVolumePercent` (UserDefaults). |
+| `SettingsWindow.swift` | Modeless `NSWindow` with fields for API key, language, TTS voice, TTS volume, mic device, DAW device, MIDI controller, and MTC source. Writes through to the corresponding `Config.set*` functions, which persist to the `.studiorunner` project file. |
 | `SessionState.swift` | State enum (`idle`, `learningMemo`, `recordingMemo`, `processingMemo`, `recordingAsk`, `askThinking`, `askSpeaking`, `consolidating`, `notReady`, `error`). Drives the icon. |
-| `Config.swift` / `EnvFile.swift` | Tunables resolved from UserDefaults (settings window) → process env → `.env` files → defaults. `.env` is loaded from `~/Library/Application Support/StudioRunner/.env`, then the project root, then a sibling of the `.app`. |
+| `Config.swift` | Single source of truth for all tunables. User-facing settings live in `ProjectSettings` (serialised as `<name>.studiorunner` at the project root). The project root path itself is kept in `UserDefaults` so the app re-opens the right folder on relaunch. |
+| `ProjectSettings.swift` | Codable struct persisted as a `.studiorunner` JSON file. Holds API key, language, TTS voice/volume, mic/DAW/MIDI device names, MTC source, AI endpoint/model, and learned MIDI bindings. A global fallback copy in `~/Library/Application Support/StudioRunner/settings.json` seeds brand-new projects. |
 | `Layout.swift` | Ensures the project-root directory layout (`studiorunner.md`, `.studiorunner.d/...`). |
-| `MIDI.swift` | CoreMIDI client, learn flow (single press + release cycle), push-to-talk gate, JSON persistence of bindings under `.studiorunner.d/midi-bindings.json` (so the next launch goes straight to listening). |
+| `MIDI.swift` | CoreMIDI client, learn flow (single press + release cycle), push-to-talk gate, MTC quarter-frame assembler. Learned bindings are persisted inside the `.studiorunner` project file via `MIDIBindingsStore` → `Config.setMidiBindings`. |
 | `CoreAudioDevice.swift` | Finds a CoreAudio input device by display name and enumerates all available inputs for the settings popup. |
 | `RollingBuffer.swift` | Fixed-size in-memory PCM ring; extraction derives wall-clock window from how many bytes are in the ring. |
-| `MicRecorder.swift` | AVAudioEngine on the default input → convert to 16 kHz mono Int16 → append to ring (with gain). |
+| `MicRecorder.swift` | `AVCaptureSession` on the chosen input device → fresh `AVAudioConverter` per CMSampleBuffer chunk → 16 kHz mono Int16 → append to ring (with gain). Uses AVCaptureSession rather than AVAudioEngine because on macOS Sequoia the AVAudioEngine input tap silently delivers no data without a complete output graph. |
 | `DAWRecorder.swift` | AVAudioEngine on a specific input device (`AudioUnitSetProperty(CurrentDevice)`) → 44.1 kHz stereo Int16 ring. |
 | `WAVWriter.swift` | Minimal RIFF/WAVE header writer for trimmed clips. |
 | `Whisper.swift` | `Process` invocation of `whisper-cli` (whisper.cpp). |
@@ -82,49 +83,38 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 No Swift packages are pulled in — everything is Apple-provided
 (AppKit, AVFoundation, CoreAudio, CoreMIDI, Foundation).
 
-## Environment variables
+## Configuration
 
-`Config.swift` reads each variable from process env first, then from
-the merged `.env` files. Place a `.env` at one of:
+All user-facing settings are stored in the `<name>.studiorunner` JSON file at
+the project root and edited through the Settings window (⌘,). There are no
+`.env` files or environment variable overrides.
 
-1. `~/Library/Application Support/StudioRunner/.env`
-2. The project root selected via the menu
-3. A sibling of the `.app` (dev convenience)
+The only value stored outside the project file is the **project root path**
+itself, which lives in `UserDefaults` (`projectRoot` key) so the app
+re-opens the correct folder on relaunch.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `STUDIORUNNER_AI_API_KEY` | — | **Required.** DeepSeek key. Until set, the menu shows "Not ready". |
-| `STUDIO_DEEPSEEK_MODEL` | `deepseek-chat` | Switch to `deepseek-reasoner` for heavier reasoning. |
-| `STUDIO_PROJECT_ROOT` | UserDefaults / Documents | Project folder. Override by env var at first launch, or pick interactively via the menu. |
-| `STUDIO_NOTES_FILE` | `studiorunner.md` | Consolidated state filename. |
-| `STUDIO_RUNNER_DIR` | `.studiorunner.d` | Hidden directory for raw, chat, audio, screenshots, bindings. |
-| `STUDIO_SYSTEM_FILE` | `system.md` | Filename (inside `STUDIO_RUNNER_DIR`) of per-project context prepended to every DeepSeek system prompt. |
-| `STUDIO_TTS` | `1` | `0` disables spoken replies. |
-| `STUDIO_TTS_VOICE` | unset | AVSpeechSynthesisVoice name match (e.g. `Serena`). |
-| `STUDIO_TTS_VOLUME` | unset | 0–100 mapped to `AVSpeechUtterance.volume`. Independent of system volume. |
-| `STUDIO_PRUNE_ASSETS` | `0` | `1` deletes audio + screenshot for each entry after it gets consolidated. |
-| `WHISPER_MODEL` | `…/ggml-medium.en.bin` | Whisper model path. |
-| `WHISPER_LANG` | `en` | Language code. `nl` for Dutch, etc. |
-| `STUDIO_MIC_GAIN` | `25` | Mic gain in dB applied in the AVAudioEngine tap. |
-| `STUDIO_MIC_PREROLL` | `0.5` | Seconds of mic audio retained before each button-down. |
-| `STUDIO_MIC_POSTROLL` | `0.5` | Seconds of mic audio retained after each button-up. |
-| `STUDIO_DAW_DEVICE` | `BlackHole 2ch` | CoreAudio input device used for DAW capture. Set to empty to disable. |
-| `STUDIO_DAW_PREROLL` | `10` | Seconds of DAW audio retained before each memo utterance. |
+Two constants in `Config.swift` can only be changed by editing the source:
+- `Config.micGainDb` (25 dB): gain applied to the mic ring after conversion.
+- `Config.pruneAssets` (false): set to `true` to delete audio + screenshots
+  after consolidation.
+
+`aiEndpoint` and `aiModel` can be overridden per-project by editing the
+`.studiorunner` file directly (e.g. to point at Claude or a local proxy).
 
 ## Output structure
 
-Identical to the previous bun script — `.studiorunner.d/` is hidden so
-it doesn't crowd the DAW session folder, and `studiorunner.md` is the
-only file at the project root.
+`.studiorunner.d/` is hidden so it doesn't crowd the DAW session folder.
+The `.studiorunner` project file travels with the DAW session and can be
+opened from Finder to switch projects.
 
 ```
 <projectRoot>/
+  <name>.studiorunner          ← project settings + learned MIDI bindings (JSON)
   studiorunner.md              ← consolidated state — read this
   .studiorunner.d/
-    system.md                  ← per-project context, prepended to every DeepSeek system prompt
+    system.md                  ← per-project context, prepended to every AI system prompt
     raw.md                     ← append-only raw stream, with watermark
     chat.md                    ← Q&A transcript
-    midi-bindings.json         ← learnt memo + ask buttons (clear via the menu to relearn)
     screenshots/
       YYMMDDHHMMSS.png         ← screenshot per memo utterance
     audio/
@@ -147,14 +137,18 @@ only file at the project root.
   stealing input from the DAW, and there's no Accessibility-permission
   dance like a global keyboard hotkey would need.
 - **Bindings persist across launches.** Once learnt, the memo + ask
-  bindings are saved to `.studiorunner.d/midi-bindings.json`; the next
+  bindings are saved inside the `.studiorunner` project file; the next
   session goes straight to listening. "Re-learn buttons…" in the menu
-  clears the file and triggers the learn flow again.
-- **AVAudioEngine + AVAudioConverter for both inputs.** No `sox`
-  subprocesses, no raw temp files on disk. The default input feeds the
-  mic ring; an audio unit with `kAudioOutputUnitProperty_CurrentDevice`
-  overridden to BlackHole feeds the DAW ring. Both rings live in
-  memory at fixed capacity.
+  clears them and triggers the learn flow again.
+- **AVCaptureSession for mic, AVAudioEngine for DAW.** No `sox`
+  subprocesses, no raw temp files on disk. `MicRecorder` uses
+  `AVCaptureSession` (AVAudioEngine's input tap silently delivers no
+  data on macOS Sequoia without a complete output graph). `DAWRecorder`
+  uses `AVAudioEngine` with `kAudioOutputUnitProperty_CurrentDevice`
+  overridden to BlackHole. Both rings live in memory at fixed capacity.
+  The `AVAudioConverter` inside `MicRecorder` is created fresh per
+  CMSampleBuffer chunk — reusing it causes zero output after the first
+  chunk due to internal SRC state.
 - **In-memory ring buffer with wall-clock-aware extraction.** Same
   insight as the bun script: don't trust spawn-time timestamps — derive
   the wall-clock time of the oldest byte from `now − bytesInRing /
@@ -184,15 +178,15 @@ only file at the project root.
   that the bun script also called out to; rewriting whisper.cpp
   bindings in Swift would multiply the build complexity without
   changing the architecture.
-- **Graceful DAW degradation.** If `STUDIO_DAW_DEVICE` is missing or
-  empty, the DAW recorder is skipped and one warning is logged. The
-  mic + assistant continue working without DAW capture. If MIDI has no
-  sources, `MIDIClient.openAllSources` throws and the state goes to
-  `.error` — push-to-talk is the only input method, so the session
-  can't start without it.
+- **Graceful DAW degradation.** If no DAW device is configured or the
+  named device isn't found, the DAW recorder is skipped and one warning
+  is logged. The mic + assistant continue working without DAW capture.
+  If MIDI has no sources, `MIDIClient.openAllSources` throws and the
+  state goes to `.error` — push-to-talk is the only input method, so
+  the session can't start without it.
 - **Privacy prompts**: NSMicrophoneUsageDescription is in `Info.plist`
-  so AVAudioEngine.start triggers the macOS prompt on first run.
-  `screencapture` needs Screen Recording permission granted manually
+  so `AVCaptureSession.startRunning` triggers the macOS prompt on first
+  run. `screencapture` needs Screen Recording permission granted manually
   in System Settings the first time. The entitlements file declares
   `audio-input`, `network.client`, and `files.user-selected.read-write`
   to keep the hardened runtime happy after Developer ID signing.
@@ -203,8 +197,7 @@ only file at the project root.
 - Grant Microphone + Screen Recording permissions on first launch.
 - Optionally drag `StudioRunner.app` into `/Applications` and add it to
   Login Items.
-- Set the API key in `~/Library/Application Support/StudioRunner/.env`
-  for persistent use, or via the shell env when launching during dev.
+- Set the API key in Settings (menu bar icon → Settings…, or ⌘,).
 
 ## Legacy
 

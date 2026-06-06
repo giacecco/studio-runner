@@ -1,8 +1,9 @@
 import Foundation
 
 /// Persistent, project-scoped configuration. Serialised as
-/// `studiorunner.json` at the project root so it travels with the DAW
-/// session folder and can be copied, backed up, or inspected by the user.
+/// `<folder-name>.studiorunner` at the project root so it travels with the
+/// DAW session folder, can be backed up or inspected as JSON, and opens
+/// Studio Runner automatically when double-clicked in Finder.
 ///
 /// A global fallback copy is kept at
 /// `~/Library/Application Support/StudioRunner/settings.json`; it is
@@ -14,6 +15,9 @@ struct ProjectSettings: Codable {
     var ttsVolumePercent: Double?
     var micDeviceName: String?
     var dawDeviceName: String?
+    var midiDeviceName: String?    // nil = accept from any MIDI device
+    var midiBindings: MIDIBindingsStore.Pair?
+    var mtcSourceName: String?    // nil = accept MTC from any source
     var aiEndpoint: String?       // nil = DeepSeek default
     var aiModel: String?          // nil = "deepseek-chat"
     /// Last-used voice name per ISO 639-1 language code, e.g. ["en": "Moira (Enhanced)", "it": "Alice"]
@@ -35,8 +39,17 @@ struct ProjectSettings: Codable {
 
     // MARK: - Well-known paths
 
+    /// Returns the `.studiorunner` file in `root`, or a default path for new projects.
+    /// Scans the folder first so an existing file with any name is found correctly;
+    /// falls back to `<folder-name>.studiorunner` only when none exists yet.
     static func projectFileURL(root: URL) -> URL {
-        root.appendingPathComponent("studiorunner.json")
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        if let found = contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+                               .first(where: { $0.pathExtension == "studiorunner" }) {
+            return found
+        }
+        return root.appendingPathComponent("\(root.lastPathComponent).studiorunner")
     }
 
     static var globalFallbackURL: URL? {

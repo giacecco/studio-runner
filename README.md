@@ -6,9 +6,11 @@ voice-driven production assistant.
 - **Hold the memo button** + speak → your note is transcribed (locally,
   via whisper.cpp), a full-screen screenshot of the DAW is taken, the
   last 10 s of DAW audio is captured, and the whole thing is
-  consolidated by DeepSeek into a live track-state markdown
-  (`studiorunner.md`).
-- **Hold the ask button** + speak → DeepSeek answers a question against
+  consolidated by an AI into a live track-state markdown
+  (`studiorunner.md`). If your DAW is transmitting MTC, each entry is
+  tagged with its DAW timeline position (e.g. `2:03`) so you can
+  navigate the log by where you were in the session.
+- **Hold the ask button** + speak → the AI answers a question against
   the current state, appends the exchange to `chat.md`, and reads the
   reply back through the system voice.
 
@@ -23,8 +25,10 @@ glyph while you're holding a button.
 - Optional: BlackHole 2ch (or any virtual loopback) routed from your
   DAW. Without it, only the mic and Q&A flow work — memo entries still
   capture screenshots, just no DAW audio clip.
+- Optional: IAC Driver enabled (built into macOS) for DAW timeline
+  position via MTC. See [DAW timeline position (MTC)](#daw-timeline-position-mtc) below.
 - A MIDI controller with two buttons / pads / pedals.
-- A DeepSeek API key (`STUDIORUNNER_AI_API_KEY`).
+- An Anthropic-compatible API key (`STUDIORUNNER_AI_API_KEY`).
 
 ## Quick start
 
@@ -52,28 +56,58 @@ The first launch will:
 
 ## API key
 
-Store the key in `~/Library/Application Support/StudioRunner/.env`:
+Open **Settings** (menu bar icon → Settings…, or ⌘,) and paste your key into
+the API key field. The menu bar item shows "Not ready" until the key is saved.
 
-```
-STUDIORUNNER_AI_API_KEY=sk-…
-```
-
-Or export it in the shell that launches `open .build/StudioRunner.app`.
-The menu bar item shows "Not ready" if the key is missing.
+The key is stored inside the `.studiorunner` project file alongside all other
+settings — no separate `.env` file needed.
 
 ## Project layout once a session has run
 
 ```
 <your music project>/
+  <name>.studiorunner          ← project settings (API key, devices, MIDI bindings…)
   studiorunner.md              ← read this; consolidated state
   .studiorunner.d/
-    system.md                  ← edit this; per-project context for DeepSeek
+    system.md                  ← edit this; per-project context for the AI
     raw.md                     ← append-only stream with watermark
     chat.md                    ← Q&A transcript
-    midi-bindings.json         ← learnt buttons
     screenshots/YYMMDDHHMMSS.png
     audio/YYMMDDHHMMSS.wav     ← DAW clips, CD quality
 ```
+
+## DAW timeline position (MTC)
+
+When your DAW transmits MTC (MIDI Timecode), Studio Runner snaps the playhead
+position at the moment you press the memo button and records it alongside the
+note. The session timeline in `studiorunner.md` then reads like:
+
+```
+- 2:03 — Recording something else again ([audio](…) · [screenshot](…), 26-06-06 10:34)
+```
+
+### 1 — Enable the IAC Driver
+
+Open **Audio MIDI Setup** (Spotlight → "Audio MIDI Setup"), choose
+**Window → Show MIDI Studio**, double-click **IAC Driver**, and tick
+**Device is online**. This creates a virtual MIDI loopback bus on your Mac.
+
+### 2 — Configure your DAW to send MTC on the IAC Driver
+
+| DAW | Where to find it |
+|---|---|
+| **Logic Pro** | File → Project Settings → Synchronisation → MIDI → Transmit MTC → IAC Driver |
+| **Ableton Live** | Preferences → Link/Tempo/MIDI → MIDI ports → enable Sync output for IAC Driver |
+| **Reaper** | Preferences → Audio → MIDI Devices → enable MTC send on IAC Driver |
+| **Pro Tools** | Setup → Peripherals → Synchronisation → MTC Generator Port → IAC Driver |
+
+### 3 — Select the source in Studio Runner Settings
+
+Open **Settings → MTC source** and pick **IAC Driver Bus 1**. Leave it on
+**Any** if IAC is the only source sending timecode.
+
+The DAW must be in playback (not paused) when you press the memo button — MTC
+is only transmitted while the transport is running.
 
 ## Why a menu bar app and not a VST3 / AU plugin?
 
@@ -95,15 +129,14 @@ graph, not an independent `MIDIClientCreate` session, so push-to-talk in
 its current form would not be possible.
 
 Running outside the DAW is the architectural advantage. StudioRunner opens
-its own `AVAudioEngine` instances (`MicRecorder` on the default input,
-`DAWRecorder` on BlackHole) entirely independently of whatever Logic or
-Ableton is doing. The DAW never knows StudioRunner is listening. CoreMIDI
-broadcasts to all listeners simultaneously, so the DAW and StudioRunner
-both receive the pedal press without conflict and without any
+its own audio sessions independently of whatever Logic or Ableton is doing:
+`MicRecorder` uses `AVCaptureSession` on the chosen input, `DAWRecorder`
+uses `AVAudioEngine` on BlackHole. The DAW never knows StudioRunner is
+listening. CoreMIDI broadcasts to all listeners simultaneously, so the DAW
+and StudioRunner both receive the pedal press without conflict and without any
 Accessibility-permission dance that a global keyboard shortcut would need.
 
 ## See also
 
-`CLAUDE.md` for the full architecture overview, the list of tunable
-environment variables, and the design decisions baked into the port
-from the previous Bun script.
+`CLAUDE.md` for the full architecture overview and the design decisions
+baked into the port from the previous Bun script.

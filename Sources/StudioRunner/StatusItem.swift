@@ -57,7 +57,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(makeItem("Open chat history", #selector(actionOpenChat)))
         menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw)))
         menu.addItem(makeItem("Prune consolidated entries", #selector(actionPrune)))
-        menu.addItem(makeItem("Clear session timeline", #selector(actionClearTimeline)))
+        menu.addItem(makeItem("Clear session…", #selector(actionClearSession)))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Quit Studio Runner", #selector(actionQuit), key: "q"))
@@ -145,7 +145,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 item.isHidden  = !coordinator.isRunning
             case #selector(actionRelearn):
                 item.isEnabled = MIDIBindingsStore.load() != nil || coordinator.isRunning
-            case #selector(actionOpenNotes), #selector(actionClearTimeline):
+            case #selector(actionOpenNotes), #selector(actionClearSession):
                 item.isEnabled = FileManager.default.fileExists(atPath: Config.notesFile.path)
             case #selector(actionOpenChat):
                 item.isEnabled = FileManager.default.fileExists(atPath: Config.chatFile.path)
@@ -174,7 +174,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func actionOpenNotes() { coordinator.openNotes() }
     @objc private func actionOpenChat()  { coordinator.openChat() }
     @objc private func actionOpenRaw()   { coordinator.openRaw() }
-    @objc private func actionPrune()         { coordinator.runPrune() }
-    @objc private func actionClearTimeline() { coordinator.clearTimeline() }
+    @objc private func actionPrune()        { coordinator.runPrune() }
+    @objc private func actionClearSession() { coordinator.clearSession() }
     @objc private func actionQuit() { NSApp.terminate(nil) }
 }

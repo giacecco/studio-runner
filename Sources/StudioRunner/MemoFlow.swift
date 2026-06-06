@@ -8,7 +8,7 @@ import Foundation
 ///   5. Append a raw.md entry
 ///   6. Signal the consolidator
 ///
-/// Writes raw.md *before* DeepSeek consolidation runs, so a network failure or
+/// Writes raw.md *before* AI consolidation runs, so a network failure or
 /// crash during consolidation can never lose a note.
 actor MemoFlow {
     private let micBuffer: RollingBuffer
@@ -34,14 +34,17 @@ actor MemoFlow {
         self.onLog = onLog
     }
 
-    func handle(startMs: Double, endMs: Double) async {
+    func handle(startMs: Double, endMs: Double, dawPosition: String?) async {
         onState(.processingMemo)
         defer { onState(.idle) }
 
         // Mic extract: preroll on the head, postroll on the tail.
         let micStart = startMs - Config.micPrerollSec * 1000
         let micEnd = endMs + Config.micPostrollSec * 1000
-        guard let micData = micBuffer.extract(startMs: micStart, endMs: micEnd) else { return }
+        guard let micData = micBuffer.extract(startMs: micStart, endMs: micEnd) else {
+            onLog("memo: mic buffer returned nil — bytesWritten=\(micBuffer.totalBytesWritten) window=[\(Int(micStart))–\(Int(micEnd))]")
+            return
+        }
 
         // Write a temp WAV for whisper.
         let tmpMic = FileManager.default.temporaryDirectory
@@ -67,10 +70,14 @@ actor MemoFlow {
             onLog("memo: whisper failed — \(error)")
             return
         }
-        if text.isEmpty { return }
+        if text.isEmpty {
+            onLog("memo: whisper returned empty text")
+            return
+        }
         if text == lastText {
             // Suppress consecutive identical transcriptions; clear so the same
             // phrase can recur after a different one.
+            onLog("memo: suppressed duplicate '\(text.prefix(60))'")
             return
         }
         lastText = text
@@ -111,6 +118,7 @@ actor MemoFlow {
             try RawStream.append(.init(
                 timestamp: ts,
                 micText: text,
+                dawPosition: dawPosition,
                 audioRel: hasDaw ? audioRel : nil,
                 screenshotRel: screenshotRel,
                 dawText: dawText

@@ -3,7 +3,7 @@ import Foundation
 /// Single source of truth for all tunable knobs.
 ///
 /// Settings that the user can change are stored in `ProjectSettings`
-/// (serialised as `studiorunner.json` at the project root). Everything else
+/// (serialised as a `*.studiorunner` file at the project root). Everything else
 /// is a hardcoded constant. There is no longer any .env file support.
 ///
 /// The project root path itself is the only value kept in UserDefaults so the
@@ -23,8 +23,6 @@ enum Config {
     static var systemFile: URL { runnerDir.appendingPathComponent(systemFilename) }
     static var screenshotsDir: URL { runnerDir.appendingPathComponent("screenshots") }
     static var audioDir: URL { runnerDir.appendingPathComponent("audio") }
-    static var bindingsFile: URL { runnerDir.appendingPathComponent("midi-bindings.json") }
-
     static func setProjectRoot(_ url: URL) {
         projectRoot = url
         UserDefaults.standard.set(url.path, forKey: "projectRoot")
@@ -42,17 +40,16 @@ enum Config {
             ?? URL(fileURLWithPath: NSHomeDirectory())
     }
 
-    // ── Project settings (studiorunner.json) ─────────────────────────────
+    // ── Project settings (*.studiorunner) ────────────────────────────────
 
     private(set) static var settings = ProjectSettings()
 
     /// Loads project settings for the current `projectRoot`.
     ///
     /// Lookup order:
-    ///   1. `<projectRoot>/studiorunner.json` — project-specific file.
+    ///   1. `<projectRoot>/<name>.studiorunner` — project-specific file (scanned by extension).
     ///   2. Global fallback at `~/Library/Application Support/StudioRunner/settings.json`
     ///      (written on every save; seeds brand-new projects).
-    ///   3. UserDefaults migration (first run after upgrading from an earlier build).
     ///
     /// Returns `true` when the settings file already existed in the project folder.
     @discardableResult
@@ -148,6 +145,24 @@ enum Config {
         saveSettings()
     }
 
+    static var midiDeviceName: String? { settings.midiDeviceName }
+    static func setMidiDeviceName(_ name: String?) {
+        settings.midiDeviceName = name
+        saveSettings()
+    }
+
+    static var midiBindings: MIDIBindingsStore.Pair? { settings.midiBindings }
+    static func setMidiBindings(_ pair: MIDIBindingsStore.Pair?) {
+        settings.midiBindings = pair
+        saveSettings()
+    }
+
+    static var mtcSourceName: String? { settings.mtcSourceName }
+    static func setMtcSourceName(_ name: String?) {
+        settings.mtcSourceName = name
+        saveSettings()
+    }
+
     static let dawPrerollSec: Double = 10
 
     static let micSampleRate: Double = 16_000
@@ -167,7 +182,7 @@ enum Config {
 
     // ── AI client ────────────────────────────────────────────────────────
 
-    /// Endpoint and model are stored in studiorunner.json so they can be
+    /// Endpoint and model are stored in the .studiorunner file so they can be
     /// overridden per-project by editing the file directly (e.g. to point at
     /// Claude or a local proxy) without needing a UI.
     static var aiEndpoint: String {
@@ -217,7 +232,7 @@ enum Config {
         return """
 You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (\(notesFilename)) up to date from the raw stream, and you answer the Producer's spoken questions about the session.
 
-Be brief and practical. Short sentences. No preamble. When you mention a past note, cite its time in HH:MM form. The Producer is listening through speakers in a live mix context — they can't read long answers and don't want them.
+Be brief and practical. Short sentences. No preamble. When you mention a past note, cite its DAW position (e.g. "2:03") if known, otherwise its wall-clock time. The Producer is listening through speakers in a live mix context — they can't read long answers and don't want them.
 
 Always respond in \(langName), including all content written to \(notesFilename).
 """

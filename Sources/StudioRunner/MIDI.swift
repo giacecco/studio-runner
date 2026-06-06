@@ -21,7 +21,7 @@ struct MIDIBinding: Codable, Equatable {
 /// Parsed MIDI event surfaced to subscribers. `other` covers anything we don't
 /// care about (pitch bend, sysex, clock).
 struct MIDIEvent {
-    enum Kind { case noteOn, noteOff, ccDown, ccUp, other }
+    enum Kind { case noteOn, noteOff, ccDown, ccUp, mtcQuarterFrame, other }
     let kind: Kind
     let channel: Int
     let data1: Int
@@ -122,6 +122,11 @@ final class MIDIClient {
 
     private static func parse(bytes: [UInt8], portName: String) -> MIDIEvent? {
         guard let status = bytes.first else { return nil }
+        // MTC quarter-frame (0xF1) — System Common, not a channel message.
+        if status == 0xF1 {
+            let d1 = bytes.count > 1 ? Int(bytes[1]) : 0
+            return MIDIEvent(kind: .mtcQuarterFrame, channel: 0, data1: d1, data2: 0, portName: portName)
+        }
         let type = status & 0xF0
         let channel = Int(status & 0x0F)
         let d1 = bytes.count > 1 ? Int(bytes[1]) : 0
@@ -138,6 +143,12 @@ final class MIDIClient {
         default:
             return MIDIEvent(kind: .other, channel: channel, data1: d1, data2: d2, portName: portName)
         }
+    }
+
+    /// Enumerate available MIDI sources without creating a full client.
+    /// Safe to call at any time, including from the settings window.
+    static func listSourceNames() -> [String] {
+        (0..<MIDIGetNumberOfSources()).map { endpointName(MIDIGetSource($0)) }
     }
 
     private static func endpointName(_ endpoint: MIDIEndpointRef) -> String {
@@ -161,7 +172,8 @@ final class MIDIClient {
 /// the menu bar state to ask the user to press a button.
 func captureBinding(
     client: MIDIClient,
-    excluding: MIDIBinding?
+    excluding: MIDIBinding?,
+    deviceName: String? = nil
 ) async throws -> MIDIBinding {
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MIDIBinding, Error>) in
         final class Box { var captured: MIDIBinding?; var subscription: UUID?; var done = false }
@@ -185,6 +197,7 @@ func captureBinding(
                 }
                 guard let c = candidate else { return }
                 if let excl = excluding, c == excl { return }
+                if let dev = deviceName, c.portName != dev { return }
                 box.captured = c
                 return
             }
@@ -283,6 +296,62 @@ final class MIDIGate {
     }
 }
 
+// MARK: - MTC receiver
+
+/// Assembles MTC quarter-frame messages (0xF1) into a DAW timeline position
+/// string ("M:SS" or "H:MM:SS"). Updated once per full 8-message cycle
+/// (~3–7 Hz depending on frame rate). Thread-safe: all state mutations happen
+/// on MIDIClient's private serial queue, which is the same queue that fires
+/// the gate's press-down callback, so reading `position` from there is safe.
+final class MTCReceiver {
+    /// Current DAW position as "M:SS" (or "H:MM:SS" once past the first hour).
+    /// Nil until the first complete 8-message cycle has been received.
+    private(set) var position: String? = nil
+
+    private var nibbles = [Int](repeating: 0, count: 8)
+    private var subscription: UUID?
+    private weak var client: MIDIClient?
+    private let sourceName: String?   // nil = accept from any source
+
+    init(client: MIDIClient, sourceName: String?) {
+        self.client = client
+        self.sourceName = sourceName
+        subscription = client.subscribe { [weak self] evt in self?.handle(evt) }
+    }
+
+    func stop() {
+        if let sub = subscription { client?.unsubscribe(sub) }
+        subscription = nil
+    }
+
+    deinit { stop() }
+
+    // MARK: - Private
+
+    private func handle(_ evt: MIDIEvent) {
+        guard evt.kind == .mtcQuarterFrame else { return }
+        if let src = sourceName, evt.portName != src { return }
+
+        let msgNum = (evt.data1 >> 4) & 0x07
+        let nibble  =  evt.data1       & 0x0F
+        nibbles[msgNum] = nibble
+
+        // Reconstruct only after the last message in each cycle arrives so we
+        // always use a coherent, single-cycle snapshot.
+        guard msgNum == 7 else { return }
+
+        let seconds = nibbles[2] | (nibbles[3] << 4)
+        let minutes = nibbles[4] | (nibbles[5] << 4)
+        let hours   = nibbles[6] | ((nibbles[7] & 0x01) << 4)
+
+        if hours > 0 {
+            position = String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            position = String(format: "%d:%02d", minutes, seconds)
+        }
+    }
+}
+
 // MARK: - Persistence
 
 enum MIDIBindingsStore {
@@ -292,18 +361,14 @@ enum MIDIBindingsStore {
     }
 
     static func load() -> Pair? {
-        guard let data = try? Data(contentsOf: Config.bindingsFile) else { return nil }
-        return try? JSONDecoder().decode(Pair.self, from: data)
+        return Config.midiBindings
     }
 
     static func save(memo: MIDIBinding, ask: MIDIBinding) {
-        try? FileManager.default.createDirectory(at: Config.runnerDir, withIntermediateDirectories: true)
-        let pair = Pair(memo: memo, ask: ask)
-        guard let data = try? JSONEncoder().encode(pair) else { return }
-        try? data.write(to: Config.bindingsFile, options: .atomic)
+        Config.setMidiBindings(Pair(memo: memo, ask: ask))
     }
 
     static func clear() {
-        try? FileManager.default.removeItem(at: Config.bindingsFile)
+        Config.setMidiBindings(nil)
     }
 }
