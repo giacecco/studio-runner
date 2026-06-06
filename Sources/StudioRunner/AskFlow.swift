@@ -10,13 +10,14 @@ import Foundation
 ///      even before consolidation has caught up)
 ///   4. Append the Q&A to chat.md
 ///   5. Speak the reply via AVSpeechSynthesizer
-///   6. Execute any [PLAY: path] / [SHOW: path] tags from the answer after TTS
+///   6. Execute any [PLAY: path] / [SHOW: path] / [GOTO: M:SS] tags from the answer after TTS
 actor AskFlow {
     private let micBuffer: RollingBuffer
     private let speaker: Speaker
     private let onState: (SessionState) -> Void
     private let onLog: (String) -> Void
     private let onClearSession: (@Sendable () -> Void)?
+    private let onGoto: (@Sendable (Int, Int) -> Void)?
     private let onDone: (@Sendable () -> Void)?
 
     init(
@@ -25,6 +26,7 @@ actor AskFlow {
         onState: @escaping (SessionState) -> Void,
         onLog: @escaping (String) -> Void,
         onClearSession: (@Sendable () -> Void)? = nil,
+        onGoto: (@Sendable (Int, Int) -> Void)? = nil,
         onDone: (@Sendable () -> Void)? = nil
     ) {
         self.micBuffer = mic
@@ -32,14 +34,16 @@ actor AskFlow {
         self.onState = onState
         self.onLog = onLog
         self.onClearSession = onClearSession
+        self.onGoto = onGoto
         self.onDone = onDone
     }
 
     private static let systemPrompt = """
-    You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
+    You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. Only answer questions about this session and project. If the question has nothing to do with the current production, say so briefly and don't engage with it further. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
     When the producer asks to hear a recording, include [PLAY: <relative-path>] in your response — for example [PLAY: audio/260606141523.wav]. The path comes verbatim from the audio: field in the raw notes or from the (audio/...) link in the session timeline. Never invent a path.
     When the producer asks to see a screenshot, include [SHOW: <relative-path>] in your response — for example [SHOW: screenshots/260606141523.png]. The path comes verbatim from the screenshot: field in the raw notes or from the (screenshot/...) link in the session timeline. Never invent a path.
-    All [PLAY:], [SHOW:], and [CLEAR_SESSION] tags are stripped before your response is spoken and executed after TTS finishes. Never mention the filename or path anywhere else in your response — only inside the tag itself.
+    When the producer asks to go to, navigate to, jump to, or find a position, include [GOTO: M:SS] in your response — for example [GOTO: 2:03]. The value must come verbatim from the daw_pos field of the matching raw note or the timestamp in the session timeline. Never invent a position; if no position is recorded for the note, say so instead.
+    All [PLAY:], [SHOW:], [GOTO:], and [CLEAR_SESSION] tags are stripped before your response is spoken and executed after TTS finishes. Never mention the filename, path, or position anywhere else in your response — only inside the tag itself.
     When the producer asks to clear, reset, or wipe the session, include [CLEAR_SESSION] anywhere in your response. Confirm the action in your spoken reply (e.g. "Done, session cleared.") but do not repeat the tag text.
     """
 
@@ -47,7 +51,8 @@ actor AskFlow {
     private static let playRe        = try! NSRegularExpression(pattern: #"\[PLAY:\s*([^\]]+)\]"#)
     private static let showRe        = try! NSRegularExpression(pattern: #"\[SHOW:\s*([^\]]+)\]"#)
     private static let clearRe       = try! NSRegularExpression(pattern: #"\[CLEAR_SESSION\]"#)
-    private static let allRe         = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]|\[CLEAR_SESSION\]"#)
+    private static let gotoRe        = try! NSRegularExpression(pattern: #"\[GOTO:\s*(\d+:\d{2})\]"#)
+    private static let allRe         = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]|\[CLEAR_SESSION\]|\[GOTO:\s*\d+:\d{2}\]"#)
     // Catches bare paths, markdown links/images, and bare timestamp filenames the AI echoes from context.
     private static let fileRefRe     = try! NSRegularExpression(pattern: #"!?\[[^\]]*\]\([^)]*\)|(?:\.studiorunner\.d/)?(?:audio|screenshots)/\S+|\b\d{12}\.(?:wav|png)\b"#)
 
@@ -118,9 +123,10 @@ actor AskFlow {
 
         for action in actions {
             switch action {
-            case .audio(let url):      await playClip(at: url)
-            case .screenshot(let url): await openInPreview(at: url)
-            case .clearSession:        onClearSession?()
+            case .audio(let url):             await playClip(at: url)
+            case .screenshot(let url):        await openInPreview(at: url)
+            case .clearSession:               onClearSession?()
+            case .goto(let mins, let secs):   onGoto?(mins, secs)
             }
         }
 
@@ -133,6 +139,7 @@ actor AskFlow {
         case audio(URL)
         case screenshot(URL)
         case clearSession
+        case goto(minutes: Int, seconds: Int)
     }
 
     private static func mediaActions(from text: String) -> [MediaAction] {
@@ -154,6 +161,15 @@ actor AskFlow {
         }
         for m in clearRe.matches(in: text, range: full) {
             tagged.append((m.range.location, .clearSession))
+        }
+        for m in gotoRe.matches(in: text, range: full) where m.numberOfRanges > 1 {
+            let r = m.range(at: 1)
+            guard r.location != NSNotFound else { continue }
+            let timeStr = ns.substring(with: r).trimmingCharacters(in: .whitespaces)
+            let parts = timeStr.split(separator: ":")
+            if parts.count == 2, let mins = Int(parts[0]), let secs = Int(parts[1]) {
+                tagged.append((m.range.location, .goto(minutes: mins, seconds: secs)))
+            }
         }
         return tagged.sorted { $0.loc < $1.loc }.map(\.action)
     }

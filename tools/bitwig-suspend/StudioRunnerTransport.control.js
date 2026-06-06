@@ -18,11 +18,15 @@ var currentPos      = 0;
 var pausedAt        = 0;
 var awaitingAskDone = false;
 var hasSignalPort   = false;
+var pendingMinutes  = 0;
+var pendingSeconds  = 0;
+var currentBpm      = 120;
 
 function init() {
   transport = host.createTransport();
   transport.isPlaying().addValueObserver(function(playing) { isPlaying = playing; });
   transport.playPosition().addValueObserver(function(pos)   { currentPos = pos;   });
+  transport.tempo().addRawValueObserver(function(bpm)       { currentBpm = bpm;   });
   host.getMidiInPort(0).setMidiCallback(onMidiGrid);
   try {
     host.getMidiInPort(1).setMidiCallback(onMidiStudioRunner);
@@ -62,12 +66,27 @@ function onMidiGrid(status, data1, data2) {
   }
 }
 
-// StudioRunner virtual source: CC 119 ch16 value 127 = ask flow done
+// StudioRunner virtual source signals (all ch16):
+//   CC 116 value=minutes, CC 115 value=seconds, CC 114 value=127 → jump transport
+//   CC 119 value=127                                              → ask flow done
 function onMidiStudioRunner(status, data1, data2) {
   var isCC = (status & 0xF0) === 0xB0;
   var ch   = status & 0x0F;
-  if (!isCC || ch !== 15 || data1 !== 119 || data2 !== 127) return;
+  if (!isCC || ch !== 15) return;
 
+  // GOTO: latch minutes/seconds then execute jump on trigger
+  if (data1 === 116) { pendingMinutes = data2; return; }
+  if (data1 === 115) { pendingSeconds = data2; return; }
+  if (data1 === 114 && data2 === 127) {
+    var totalSeconds = pendingMinutes * 60 + pendingSeconds;
+    var beats = totalSeconds * currentBpm / 60.0;
+    if (isPlaying) { transport.stop(); }
+    transport.playStartPosition().set(beats);
+    return;
+  }
+
+  // Ask flow done
+  if (data1 !== 119 || data2 !== 127) return;
   if (awaitingAskDone && wasPlaying) {
     host.scheduleTask(function() { transport.play(); }, null, 1000);
   }

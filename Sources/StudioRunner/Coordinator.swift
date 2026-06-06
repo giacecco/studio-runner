@@ -275,6 +275,9 @@ final class Coordinator {
             onClearSession: { [weak self] in
                 Task { @MainActor in self?.clearSessionHeadless() }
             },
+            onGoto: { [midi = self.midi] minutes, seconds in
+                midi?.signalGoto(minutes: minutes, seconds: seconds)
+            },
             onDone: { [midi = self.midi] in
                 midi?.signalAskDone()
             }

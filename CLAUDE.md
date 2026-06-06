@@ -198,9 +198,3 @@ opened from Finder to switch projects.
 - Optionally drag `StudioRunner.app` into `/Applications` and add it to
   Login Items.
 - Set the API key in Settings (menu bar icon → Settings…, or ⌘,).
-
-## Legacy
-
-The original `studio-runner.ts` (Bun CLI) has been removed in this
-commit. Git history preserves the reference implementation; the Swift
-port mirrors its flow file-for-file.

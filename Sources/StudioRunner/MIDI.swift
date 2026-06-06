@@ -80,6 +80,25 @@ final class MIDIClient: @unchecked Sendable {
         MIDIReceived(virtualSource, &packetList)
     }
 
+    /// Send CC 116 (minutes) + CC 115 (seconds) + CC 114 trigger on ch16
+    /// to tell the Bitwig script to jump the transport to the given wall-clock position.
+    func signalGoto(minutes: Int, seconds: Int) {
+        guard virtualSource != 0 else { return }
+        func send(_ cc: UInt8, _ val: UInt8) {
+            var packet = MIDIPacket()
+            packet.timeStamp = 0
+            packet.length = 3
+            packet.data.0 = 0xBF  // CC, channel 15 (0-indexed)
+            packet.data.1 = cc
+            packet.data.2 = val
+            var pktList = MIDIPacketList(numPackets: 1, packet: packet)
+            MIDIReceived(virtualSource, &pktList)
+        }
+        send(116, UInt8(min(minutes, 127)))
+        send(115, UInt8(min(seconds, 59)))
+        send(114, 127)
+    }
+
     func openAllSources() throws {
         let count = MIDIGetNumberOfSources()
         guard count > 0 else { throw MIDIError.noSources }

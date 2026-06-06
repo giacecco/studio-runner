@@ -12,7 +12,9 @@ voice-driven production assistant.
   navigate the log by where you were in the session.
 - **Hold the ask button** + speak → the AI answers a question against
   the current state, appends the exchange to `chat.md`, and reads the
-  reply back through the system voice.
+  reply back through the system voice. If the question is about a
+  specific note the AI can jump the DAW transport to that position —
+  "take me to where I mentioned Vocalign."
 
 No Dock icon, no terminal session — just a status item that changes
 glyph while you're holding a button.
@@ -98,6 +100,11 @@ Changing the language does three things at once:
 
 ## Ask flow — voice commands
 
+Studio Runner is a junior assistant for *this* session — it knows what you
+said, when you said it, and where in the timeline you said it. It is not a
+production advisor. For production advice, go to a real expert human
+producer.
+
 During an ask session the AI answers questions against the current session
 state, but it can also trigger actions. Speak naturally — exact phrasing
 does not matter.
@@ -106,16 +113,35 @@ does not matter.
 |---|---|
 | "Play the recording from when I noticed the reverb" | Plays the DAW audio clip associated with that note after the AI finishes speaking |
 | "Show me the screenshot from bar 32" | Opens the screenshot from that note in Preview |
+| "Take me to where I mentioned Vocalign" / "Go to the last note about the kick" | Stops the DAW transport (if running) and moves the playhead to the `daw_pos` timestamp recorded with that note. Requires MTC to have been active when the memo was taken. |
 | "Clear the session" / "Reset" / "Wipe the session" | Resets the session timeline, raw stream, chat history, and all audio/screenshots. Track notes, TODOs, and open questions are kept. Asks you to confirm in speech before executing. |
 
 Actions are extracted from the AI response as tagged directives
-(`[PLAY: …]`, `[SHOW: …]`, `[CLEAR_SESSION]`) and executed after TTS
-finishes — you hear the reply first, then the clip plays or the screenshot
-opens. File paths are never spoken aloud.
+(`[PLAY: …]`, `[SHOW: …]`, `[GOTO: M:SS]`, `[CLEAR_SESSION]`) and
+executed after TTS finishes — you hear the reply first, then the clip
+plays, the screenshot opens, or the playhead jumps. File paths and
+positions are never spoken aloud.
 
-If the AI cannot find a matching recording or screenshot (e.g. the note you
-described does not have one, or consolidation has not run yet) it will say
-so rather than guessing a path.
+If the AI cannot find a matching recording, screenshot, or timeline
+position it will say so rather than guessing.
+
+### Transport navigation via GOTO
+
+When you ask to navigate to a note, StudioRunner sends three MIDI CCs on its
+virtual source (channel 16) to the Bitwig controller script:
+
+| CC | Carries |
+|---|---|
+| 116 | minutes (0–127) |
+| 115 | seconds (0–59) |
+| 114 value=127 | trigger: stop transport + jump to position |
+
+The script converts wall-clock time to beats using the current project BPM.
+This is exact for constant-tempo projects; for variable-tempo projects the
+cursor lands in the right neighbourhood but may be off by a bar or two.
+
+MTC must have been transmitting when the original memo was taken — if no
+`daw_pos` was recorded for a note, the AI will say so instead of guessing.
 
 ## DAW timeline position (MTC)
 
@@ -168,10 +194,10 @@ stopped — the script only resumes what it paused.
   playing: saves playhead position and stops. Memo resumes on release; ask
   waits for a done signal.
 - **StudioRunner** (port 1) — a virtual MIDI source the app creates at
-  startup. The moment the ask flow ends — success, error, or silence —
-  StudioRunner fires CC 119 ch 16 on that source and the script resumes
-  transport one second later (giving you a beat before the music kicks back
-  in).
+  startup. Two signal types arrive here on channel 16:
+  - **CC 119 value=127** — ask flow done; resume transport after 1 s.
+  - **CC 116/115/114** — GOTO sequence (minutes, seconds, trigger); stop
+    transport and jump playhead to that position.
 
 ### Setup
 
