@@ -22,11 +22,12 @@ glyph while you're holding a button.
 - macOS 13 or later, Apple Silicon.
 - Xcode command-line tools (`swift`, `codesign`).
 - Homebrew packages: `whisper-cpp` (plus the `ggml-medium.en.bin` model).
-- Optional: BlackHole 2ch (or any virtual loopback) routed from your
-  DAW. Without it, only the mic and Q&A flow work — memo entries still
-  capture screenshots, just no DAW audio clip.
-- Optional: IAC Driver enabled (built into macOS) for DAW timeline
-  position via MTC. See [DAW timeline position (MTC)](#daw-timeline-position-mtc) below.
+- **BlackHole 2ch** (or any virtual loopback) routed from your DAW —
+  required for DAW audio clips in memo entries. Without it every memo
+  captures a screenshot and transcription but no audio.
+- **IAC Driver** enabled (built into macOS, off by default) — required
+  for DAW timeline position tags in memo entries. See
+  [DAW timeline position (MTC)](#daw-timeline-position-mtc) below.
 - A MIDI controller with two buttons / pads / pedals.
 - An Anthropic-compatible API key (`STUDIORUNNER_AI_API_KEY`).
 
