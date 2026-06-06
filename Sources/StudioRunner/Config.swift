@@ -1,15 +1,20 @@
 import Foundation
 
-/// Single source of truth for tunable knobs. Reads from process env first, then
-/// from `EnvFile` (which has already been loaded against the current project
-/// root), then falls back to a default.
+/// Single source of truth for all tunable knobs.
+///
+/// Settings that the user can change are stored in `ProjectSettings`
+/// (serialised as `studiorunner.json` at the project root). Everything else
+/// is a hardcoded constant. There is no longer any .env file support.
+///
+/// The project root path itself is the only value kept in UserDefaults so the
+/// app re-opens the right folder on relaunch.
 enum Config {
     // ── Project layout ───────────────────────────────────────────────────
 
     private(set) static var projectRoot: URL = resolveInitialProjectRoot()
-    static var runnerDirName: String { EnvFile.value("STUDIO_RUNNER_DIR") ?? ".studiorunner.d" }
-    static var notesFilename: String { EnvFile.value("STUDIO_NOTES_FILE") ?? "studiorunner.md" }
-    static var systemFilename: String { EnvFile.value("STUDIO_SYSTEM_FILE") ?? "system.md" }
+    static let runnerDirName = ".studiorunner.d"
+    static let notesFilename = "studiorunner.md"
+    static let systemFilename = "system.md"
 
     static var runnerDir: URL { projectRoot.appendingPathComponent(runnerDirName) }
     static var notesFile: URL { projectRoot.appendingPathComponent(notesFilename) }
@@ -23,7 +28,7 @@ enum Config {
     static func setProjectRoot(_ url: URL) {
         projectRoot = url
         UserDefaults.standard.set(url.path, forKey: "projectRoot")
-        EnvFile.load(projectRoot: url)
+        loadProjectSettings()
     }
 
     private static func resolveInitialProjectRoot() -> URL {
@@ -33,19 +38,93 @@ enum Config {
         if let envRoot = ProcessInfo.processInfo.environment["STUDIO_PROJECT_ROOT"], !envRoot.isEmpty {
             return URL(fileURLWithPath: envRoot)
         }
-        // Last resort: the user's Documents folder. They'll be prompted to pick
-        // a real project folder from the menu.
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory())
+    }
+
+    // ── Project settings (studiorunner.json) ─────────────────────────────
+
+    private(set) static var settings = ProjectSettings()
+
+    /// Loads project settings for the current `projectRoot`.
+    ///
+    /// Lookup order:
+    ///   1. `<projectRoot>/studiorunner.json` — project-specific file.
+    ///   2. Global fallback at `~/Library/Application Support/StudioRunner/settings.json`
+    ///      (written on every save; seeds brand-new projects).
+    ///   3. UserDefaults migration (first run after upgrading from an earlier build).
+    ///
+    /// Returns `true` when the settings file already existed in the project folder.
+    @discardableResult
+    static func loadProjectSettings() -> Bool {
+        let fileURL = ProjectSettings.projectFileURL(root: projectRoot)
+        if let loaded = ProjectSettings.load(from: fileURL) {
+            settings = loaded
+            return true
+        }
+        if let fallbackURL = ProjectSettings.globalFallbackURL,
+           let fallback = ProjectSettings.load(from: fallbackURL) {
+            settings = fallback
+        } else {
+            settings = ProjectSettings(
+                apiKey: nil,
+                ttsVolumePercent: (UserDefaults.standard.object(forKey: "ttsVolumePercent") as? NSNumber)?.doubleValue,
+                micDeviceName: {
+                    let v = UserDefaults.standard.string(forKey: "micDeviceName") ?? ""
+                    return v.isEmpty ? nil : v
+                }(),
+                dawDeviceName: {
+                    let v = UserDefaults.standard.string(forKey: "dawDeviceName") ?? ""
+                    return v.isEmpty ? nil : v
+                }()
+            )
+        }
+        return false
+    }
+
+    static func saveSettings() {
+        settings.save(to: ProjectSettings.projectFileURL(root: projectRoot))
+        if let url = ProjectSettings.globalFallbackURL {
+            let dir = url.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            settings.save(to: url)
+        }
+    }
+
+    // ── Language ─────────────────────────────────────────────────────────
+
+    struct LanguageOption {
+        let name: String    // English display name shown in the UI
+        let code: String    // ISO 639-1 code — used for Whisper + voice filtering
+    }
+
+    static let languages: [LanguageOption] = [
+        .init(name: "English",    code: "en"),
+        .init(name: "French",     code: "fr"),
+        .init(name: "German",     code: "de"),
+        .init(name: "Spanish",    code: "es"),
+        .init(name: "Italian",    code: "it"),
+        .init(name: "Dutch",      code: "nl"),
+        .init(name: "Portuguese", code: "pt"),
+        .init(name: "Japanese",   code: "ja"),
+        .init(name: "Korean",     code: "ko"),
+        .init(name: "Chinese",    code: "zh"),
+    ]
+
+    static var language: String { settings.language ?? "en" }
+    static func setLanguage(_ code: String) {
+        settings.language = code == "en" ? nil : code
+        saveSettings()
     }
 
     // ── Whisper ──────────────────────────────────────────────────────────
 
     static var whisperModel: String {
-        EnvFile.value("WHISPER_MODEL")
-            ?? "/opt/homebrew/share/whisper-cpp/models/ggml-medium.en.bin"
+        let base = "/opt/homebrew/share/whisper-cpp/models/"
+        // The .en model only supports English; use the multilingual variant for others.
+        return language == "en" ? base + "ggml-medium.en.bin" : base + "ggml-medium.bin"
     }
-    static var whisperLanguage: String { EnvFile.value("WHISPER_LANG") ?? "en" }
+    static var whisperLanguage: String { language }
     static var whisperBinary: String {
         which("whisper-cli") ?? "/opt/homebrew/bin/whisper-cli"
     }
@@ -53,33 +132,24 @@ enum Config {
 
     // ── Audio ────────────────────────────────────────────────────────────
 
-    static var micGainDb: Double { Double(EnvFile.value("STUDIO_MIC_GAIN") ?? "") ?? 25 }
-    static var micPrerollSec: Double { Double(EnvFile.value("STUDIO_MIC_PREROLL") ?? "") ?? 0.5 }
-    static var micPostrollSec: Double { Double(EnvFile.value("STUDIO_MIC_POSTROLL") ?? "") ?? 0.5 }
+    static let micGainDb: Double = 25
+    static let micPrerollSec: Double = 0.5
+    static let micPostrollSec: Double = 0.5
 
-    private static let micDeviceKey = "micDeviceName"
-    /// Empty string means "follow the system default input device".
-    static var micDeviceName: String {
-        if let v = UserDefaults.standard.string(forKey: micDeviceKey) { return v }
-        return EnvFile.value("STUDIO_MIC_DEVICE") ?? ""
-    }
+    static var micDeviceName: String { settings.micDeviceName ?? "" }
     static func setMicDeviceName(_ name: String) {
-        UserDefaults.standard.set(name, forKey: micDeviceKey)
+        settings.micDeviceName = name.isEmpty ? nil : name
+        saveSettings()
     }
 
-    private static let dawDeviceKey = "dawDeviceName"
-    /// Order of precedence: UserDefaults (set via Settings…) > env (.env or
-    /// shell) > default. An empty string disables DAW capture entirely.
-    static var dawDeviceName: String {
-        if let v = UserDefaults.standard.string(forKey: dawDeviceKey) { return v }
-        return EnvFile.value("STUDIO_DAW_DEVICE") ?? "BlackHole 2ch"
-    }
+    static var dawDeviceName: String { settings.dawDeviceName ?? "BlackHole 2ch" }
     static func setDawDeviceName(_ name: String) {
-        UserDefaults.standard.set(name, forKey: dawDeviceKey)
+        settings.dawDeviceName = name
+        saveSettings()
     }
-    static var dawPrerollSec: Double { Double(EnvFile.value("STUDIO_DAW_PREROLL") ?? "") ?? 10 }
 
-    // Audio formats (constant — match the bun script's behaviour).
+    static let dawPrerollSec: Double = 10
+
     static let micSampleRate: Double = 16_000
     static let micChannels: UInt32 = 1
     static let micBitDepth: Int = 16
@@ -92,62 +162,69 @@ enum Config {
 
     // ── Ring buffers ─────────────────────────────────────────────────────
 
-    /// Mic ring buffer length. Covers any reasonable single utterance plus
-    /// preroll/postroll. 60s @ 32 KB/s = 1.92 MB.
     static let micBufferSeconds: Double = 60
-
-    /// DAW ring buffer length — must cover dawPrerollSec + a long utterance.
-    /// 60s @ 176 KB/s = 10.6 MB.
     static var dawBufferSeconds: Double { max(60, dawPrerollSec + 30) }
 
-    // ── DeepSeek ─────────────────────────────────────────────────────────
+    // ── AI client ────────────────────────────────────────────────────────
 
-    static var deepseekModel: String { EnvFile.value("STUDIO_DEEPSEEK_MODEL") ?? "deepseek-chat" }
-    static var apiKey: String? { EnvFile.value("STUDIORUNNER_AI_API_KEY") }
+    /// Endpoint and model are stored in studiorunner.json so they can be
+    /// overridden per-project by editing the file directly (e.g. to point at
+    /// Claude or a local proxy) without needing a UI.
+    static var aiEndpoint: String {
+        settings.aiEndpoint ?? "https://api.deepseek.com/anthropic/v1/messages"
+    }
+    static var aiModel: String { settings.aiModel ?? "deepseek-chat" }
+
+    static var apiKey: String? { settings.apiKey }
+    static func setApiKey(_ key: String?) {
+        settings.apiKey = key.flatMap { $0.isEmpty ? nil : $0 }
+        saveSettings()
+    }
 
     // ── TTS ──────────────────────────────────────────────────────────────
 
-    static var ttsEnabled: Bool { (EnvFile.value("STUDIO_TTS") ?? "1") != "0" }
-    static var ttsVoiceName: String? { EnvFile.value("STUDIO_TTS_VOICE") }
-
-    private static let ttsVolumeKey = "ttsVolumePercent"
-    /// 0–100. UserDefaults wins over env. nil → leave at synthesizer default.
-    static var ttsVolumePercent: Double? {
-        if let n = UserDefaults.standard.object(forKey: ttsVolumeKey) as? NSNumber {
-            return max(0, min(100, n.doubleValue))
+    static var ttsVoiceName: String? { settings.ttsVoice }
+    static func setTtsVoice(_ voice: String?) {
+        let normalized = voice?.isEmpty == true ? nil : voice
+        let lang = language  // capture before writing settings — avoids Swift exclusivity violation
+        settings.ttsVoice = normalized
+        if let name = normalized {
+            if settings.voicePerLanguage == nil { settings.voicePerLanguage = [:] }
+            settings.voicePerLanguage?[lang] = name
         }
-        guard let raw = EnvFile.value("STUDIO_TTS_VOLUME"), let v = Double(raw) else { return nil }
-        return max(0, min(100, v))
+        saveSettings()
     }
-    /// 0.0–1.0, derived from `ttsVolumePercent`.
+
+    static var ttsVolumePercent: Double? {
+        settings.ttsVolumePercent.map { max(0, min(100, $0)) }
+    }
     static var ttsVolume: Float? {
-        guard let p = ttsVolumePercent else { return nil }
-        return Float(p / 100.0)
+        ttsVolumePercent.map { Float($0 / 100.0) }
     }
     static func setTtsVolumePercent(_ percent: Double?) {
-        if let p = percent {
-            UserDefaults.standard.set(max(0, min(100, p)), forKey: ttsVolumeKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: ttsVolumeKey)
-        }
+        settings.ttsVolumePercent = percent.map { max(0, min(100, $0)) }
+        saveSettings()
     }
 
     // ── Maintenance ──────────────────────────────────────────────────────
 
-    static var pruneAssets: Bool { (EnvFile.value("STUDIO_PRUNE_ASSETS") ?? "0") == "1" }
+    static let pruneAssets = false
 
-    // ── Base role baked into every DeepSeek system prompt ────────────────
+    // ── Base role baked into every AI system prompt ──────────────────────
 
-    static let baseRole = """
-You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (\(Config.notesFilename)) up to date from the raw stream, and you answer the Producer's spoken questions about the session.
+    static var baseRole: String {
+        let langName = languages.first { $0.code == language }?.name ?? "English"
+        return """
+You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (\(notesFilename)) up to date from the raw stream, and you answer the Producer's spoken questions about the session.
 
 Be brief and practical. Short sentences. No preamble. When you mention a past note, cite its time in HH:MM form. The Producer is listening through speakers in a live mix context — they can't read long answers and don't want them.
+
+Always respond in \(langName), including all content written to \(notesFilename).
 """
+    }
 }
 
-/// Best-effort PATH lookup for binaries needed at runtime. The .app inherits
-/// the system's default PATH which lacks /opt/homebrew/bin, so we probe the
-/// usual Homebrew locations directly.
+/// Best-effort PATH lookup for binaries needed at runtime.
 func which(_ name: String) -> String? {
     let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin"]
     for dir in candidates {

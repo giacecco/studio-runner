@@ -9,7 +9,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let coordinator: Coordinator
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
-    private let statusRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let statusRow  = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let startItem  = NSMenuItem()
+    private let stopItem   = NSMenuItem()
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
@@ -24,8 +26,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func configureButton() {
         guard let button = statusItem.button else { return }
-        button.image = NSImage(systemSymbolName: "waveform",
-                               accessibilityDescription: "Studio Runner")
+        button.image = makeIcon(for: .idle)
         button.image?.isTemplate = true
     }
 
@@ -36,8 +37,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(statusRow)
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Start session", #selector(actionStart)))
-        menu.addItem(makeItem("Stop session",  #selector(actionStop)))
+        startItem.title = "Start session"
+        startItem.action = #selector(actionStart)
+        startItem.target = self
+        stopItem.title = "Stop session"
+        stopItem.action = #selector(actionStop)
+        stopItem.target = self
+        menu.addItem(startItem)
+        menu.addItem(stopItem)
         menu.addItem(makeItem("Re-learn buttons…", #selector(actionRelearn)))
         menu.addItem(.separator())
 
@@ -66,13 +73,59 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // MARK: - State binding
 
     private func apply(state: SessionState) {
-        statusRow.title = state.label
+        statusRow.title = statusLabel(for: state)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: state.symbolName,
-                                   accessibilityDescription: state.label)
-            button.image?.isTemplate = true
+            button.image = makeIcon(for: state)
             button.toolTip = state.label
         }
+    }
+
+    private func statusLabel(for state: SessionState) -> String {
+        let detail: String
+        if case .idle = state {
+            detail = coordinator.isRunning ? "Listening" : "Not running"
+        } else {
+            detail = state.label
+        }
+        return "\(detail)  ·  \(Config.projectRoot.lastPathComponent)"
+    }
+
+    // MARK: - Icon construction
+
+    private func makeIcon(for state: SessionState) -> NSImage {
+        if case .idle = state { return makeIdleIcon() }
+        let img = NSImage(systemSymbolName: state.symbolName,
+                          accessibilityDescription: state.label) ?? NSImage()
+        img.isTemplate = true
+        return img
+    }
+
+    /// Mug silhouette with a music note cut out of the body — like a printed
+    /// design on the mug. Uses destinationOut to knock the note out of the fill.
+    private func makeIdleIcon() -> NSImage {
+        let size = NSSize(width: 20, height: 16)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let mugConf = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+            if let mug = NSImage(systemSymbolName: "mug.fill",
+                                 accessibilityDescription: nil)?
+                .withSymbolConfiguration(mugConf) {
+                mug.draw(in: NSRect(x: 0, y: 0, width: 20, height: 16))
+            }
+
+            // Cut the note out of the mug body so it reads as a printed design.
+            let noteConf = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold)
+            if let note = NSImage(systemSymbolName: "music.note",
+                                  accessibilityDescription: nil)?
+                .withSymbolConfiguration(noteConf),
+               let ctx = NSGraphicsContext.current {
+                ctx.compositingOperation = .destinationOut
+                note.draw(in: NSRect(x: 3, y: 4, width: 7, height: 8))
+                ctx.compositingOperation = .sourceOver
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     // MARK: - NSMenuDelegate (refresh enable/disable on open)
@@ -82,9 +135,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             guard let action = item.action else { continue }
             switch action {
             case #selector(actionStart):
-                item.isEnabled = !coordinator.isRunning && isReadyState()
+                item.isHidden  = coordinator.isRunning
+                item.isEnabled = isReadyState()
             case #selector(actionStop):
-                item.isEnabled = coordinator.isRunning
+                item.isHidden  = !coordinator.isRunning
             case #selector(actionRelearn):
                 item.isEnabled = MIDIBindingsStore.load() != nil || coordinator.isRunning
             case #selector(actionOpenNotes):
@@ -97,7 +151,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 break
             }
         }
-        statusRow.title = "\(coordinator.state.state.label)  ·  \(Config.projectRoot.lastPathComponent)"
+        statusRow.title = statusLabel(for: coordinator.state.state)
     }
 
     private func isReadyState() -> Bool {

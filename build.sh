@@ -16,7 +16,14 @@ cd "$(dirname "$0")"
 CONFIG=${CONFIG:-release}
 APP_NAME="StudioRunner"
 APP_BUNDLE="${APP_NAME}.app"
-SIGN_IDENTITY="${STUDIO_SIGN_IDENTITY:-}"
+
+# Prefer an explicit override, then auto-detect the first Developer ID Application cert.
+if [[ -n "${STUDIO_SIGN_IDENTITY:-}" ]]; then
+    SIGN_IDENTITY="${STUDIO_SIGN_IDENTITY}"
+else
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"') || true
+fi
 
 echo "==> swift build -c ${CONFIG}"
 swift build -c "${CONFIG}"

@@ -75,6 +75,33 @@ The menu bar item shows "Not ready" if the key is missing.
     audio/YYMMDDHHMMSS.wav     ← DAW clips, CD quality
 ```
 
+## Why a menu bar app and not a VST3 / AU plugin?
+
+A plugin is a guest inside the DAW's audio process. The host owns the
+CoreAudio session — it opens the device, sets the sample rate and buffer
+size, and hands the plugin pre-routed buffers. A plugin has no authority
+to open a separate `AVAudioEngine` session on the mic device independently;
+the DAW already holds that handle.
+
+You can technically call CoreAudio APIs from an in-process AU (v2) or
+VST3 on macOS (they are not sandboxed the way AUv3 XPC extensions are),
+but you would be fighting the host for device ownership. In practice this
+causes dropped buffers, sample-rate conflicts, or crashes — and every DAW
+handles the collision differently. If you wanted the mic signal through a
+plugin you would need the user to route a mic input track to the plugin's
+bus, which means the DAW decides which physical mic, at what gain, through
+what insert chain. MIDI would similarly only arrive through the host's MIDI
+graph, not an independent `MIDIClientCreate` session, so push-to-talk in
+its current form would not be possible.
+
+Running outside the DAW is the architectural advantage. StudioRunner opens
+its own `AVAudioEngine` instances (`MicRecorder` on the default input,
+`DAWRecorder` on BlackHole) entirely independently of whatever Logic or
+Ableton is doing. The DAW never knows StudioRunner is listening. CoreMIDI
+broadcasts to all listeners simultaneously, so the DAW and StudioRunner
+both receive the pedal press without conflict and without any
+Accessibility-permission dance that a global keyboard shortcut would need.
+
 ## See also
 
 `CLAUDE.md` for the full architecture overview, the list of tunable

@@ -1,22 +1,47 @@
 import Foundation
 
-/// DeepSeek's Anthropic-compatible Messages endpoint. Mirrors the bun client:
-/// `x-api-key`, `anthropic-version: 2023-06-01`, `{ system, messages,
-/// max_tokens }`. The full system prompt is composed of three layers:
-///   1. `Config.baseRole` (hardcoded studio-runner persona)
-///   2. `.studiorunner.d/system.md` (per-project context, user-edited)
-///   3. The call-specific prompt passed in by the caller
-enum DeepSeek {
+/// Anthropic-compatible Messages API client. Works with any endpoint that
+/// implements the Anthropic Messages protocol — DeepSeek, Claude, etc.
+/// Configured via `Config.aiEndpoint` and `Config.aiModel`.
+enum AIClient {
     struct APIError: Error, CustomStringConvertible {
         let status: Int
         let body: String
-        var description: String { "DeepSeek HTTP \(status): \(body)" }
+        var description: String { "HTTP \(status): \(body)" }
+    }
+
+    /// Minimal auth check: sends a 1-token request and throws on any HTTP error.
+    static func ping() async throws {
+        guard let key = Config.apiKey else {
+            throw NSError(domain: "StudioRunner", code: 100,
+                          userInfo: [NSLocalizedDescriptionKey: "No API key set"])
+        }
+        var req = URLRequest(url: URL(string: Config.aiEndpoint)!)
+        req.httpMethod = "POST"
+        req.setValue(key, forHTTPHeaderField: "x-api-key")
+        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 10
+        let payload: [String: Any] = [
+            "model": Config.aiModel,
+            "max_tokens": 1,
+            "messages": [["role": "user", "content": "Hi"]]
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError(status: -1, body: "no response")
+        }
+        if http.statusCode < 200 || http.statusCode >= 300 {
+            throw APIError(status: http.statusCode,
+                           body: String(data: data, encoding: .utf8) ?? "")
+        }
     }
 
     static func call(systemPrompt: String, userPrompt: String) async throws -> String {
         guard let key = Config.apiKey else {
             throw NSError(domain: "StudioRunner", code: 100,
-                          userInfo: [NSLocalizedDescriptionKey: "STUDIORUNNER_AI_API_KEY not set"])
+                          userInfo: [NSLocalizedDescriptionKey: "API key not set"])
         }
 
         let projectContext: String = (try? String(contentsOf: Config.systemFile, encoding: .utf8))?
@@ -26,13 +51,13 @@ enum DeepSeek {
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n---\n\n")
 
-        var req = URLRequest(url: URL(string: "https://api.deepseek.com/anthropic/v1/messages")!)
+        var req = URLRequest(url: URL(string: Config.aiEndpoint)!)
         req.httpMethod = "POST"
         req.setValue(key, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload: [String: Any] = [
-            "model": Config.deepseekModel,
+            "model": Config.aiModel,
             "max_tokens": 4096,
             "system": fullSystem,
             "messages": [["role": "user", "content": userPrompt]]

@@ -1,41 +1,40 @@
 import AppKit
+import AVFoundation
 import Foundation
 
-/// Modeless settings window. Three controls: producer microphone picker, DAW
-/// input device picker, and TTS volume slider. Edits are written to
-/// UserDefaults via `Config` setters as soon as the user changes a control —
-/// there is no Apply / Cancel.
-///
-/// Device changes are heavier than a volume change: if a session is running,
-/// we ask the coordinator to bounce it so the recorders rebind. Volume
-/// changes apply on the next spoken utterance — `Speaker` reads
-/// `Config.ttsVolume` for every `speak()` call.
+/// Modeless settings window. Controls: language, producer microphone, DAW
+/// input device, AI voice (filtered to the chosen language), TTS volume, and
+/// Anthropic-compatible API key. Edits write to `studiorunner.json`
+/// immediately via `Config` setters — there is no Apply / Cancel.
 @MainActor
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private weak var coordinator: Coordinator?
-    private let micPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let dawPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let volumeSlider = NSSlider()
-    private let volumeReadout = NSTextField(labelWithString: "")
-    private let volumeDefaultButton = NSButton(
-        title: "Reset volume to default",
-        target: nil,
-        action: nil
-    )
-    private let doneButton = NSButton(title: "Done", target: nil, action: nil)
+
+    private let languagePopup    = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let micPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let dawPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let voicePopup       = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let volumeSlider     = NSSlider()
+    private let volumeReadout    = NSTextField(labelWithString: "")
+    private let testVoiceButton  = NSButton(title: "Test voice", target: nil, action: nil)
+    private let volumeDefaultButton = NSButton(title: "Reset to default", target: nil, action: nil)
+    private let apiKeyField      = NSSecureTextField()
+    private let apiKeyTestButton = NSButton(title: "Test", target: nil, action: nil)
+    private let apiKeyStatus     = NSTextField(labelWithString: "")
+    private let doneButton       = NSButton(title: "Done", target: nil, action: nil)
+    private let speaker          = Speaker()
+    private var originalApiKey: String?
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 290),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 510),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Studio Runner Settings"
         window.isReleasedWhenClosed = false
-        // Status-bar apps run as .accessory; without raising the level, this
-        // window appears beneath whatever browser/DAW the user is in front of.
         window.level = .floating
         window.collectionBehavior.insert(.moveToActiveSpace)
         super.init(window: window)
@@ -57,17 +56,42 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func buildLayout() {
         guard let content = window?.contentView else { return }
 
+        // Language
+        let langLabel = NSTextField(labelWithString: "Session language:")
+        langLabel.alignment = .right
+        languagePopup.target = self
+        languagePopup.action = #selector(languageChanged)
+
+        // Microphone
         let micLabel = NSTextField(labelWithString: "Producer microphone:")
         micLabel.alignment = .right
         micPopup.target = self
         micPopup.action = #selector(micChanged)
 
+        // DAW
         let dawLabel = NSTextField(labelWithString: "DAW input device:")
         dawLabel.alignment = .right
         dawPopup.target = self
         dawPopup.action = #selector(dawChanged)
 
-        let volLabel = NSTextField(labelWithString: "DeepSeek voice volume:")
+        // Voice
+        let voiceLabel = NSTextField(labelWithString: "AI voice:")
+        voiceLabel.alignment = .right
+        voicePopup.target = self
+        voicePopup.action = #selector(voiceChanged)
+
+        let voiceHint = NSTextField(labelWithString:
+            "Add voices or download enhanced versions: System Settings → Accessibility → Spoken Content → System Voice → Manage Voices…")
+        voiceHint.textColor = .secondaryLabelColor
+        voiceHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        voiceHint.isEditable = false
+        voiceHint.isBordered = false
+        voiceHint.backgroundColor = .clear
+        voiceHint.lineBreakMode = .byWordWrapping
+        voiceHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Volume
+        let volLabel = NSTextField(labelWithString: "Voice volume:")
         volLabel.alignment = .right
 
         volumeSlider.minValue = 0
@@ -80,12 +104,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         volumeReadout.alignment = .left
         volumeReadout.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
+        testVoiceButton.bezelStyle = .rounded
+        testVoiceButton.target = self
+        testVoiceButton.action = #selector(testVoice)
+
         volumeDefaultButton.bezelStyle = .rounded
         volumeDefaultButton.target = self
         volumeDefaultButton.action = #selector(useDefaultVolume)
 
+        // API key
+        let apiLabel = NSTextField(labelWithString: "Anthropic-compatible API key:")
+        apiLabel.alignment = .right
+
+        apiKeyField.placeholderString = "sk-…"
+        apiKeyField.usesSingleLineMode = true
+        apiKeyField.cell?.wraps = false
+        apiKeyField.cell?.isScrollable = true
+        apiKeyField.delegate = self
+        apiKeyField.target = self
+        apiKeyField.action = #selector(apiKeyCommitted)
+
+        apiKeyTestButton.bezelStyle = .rounded
+        apiKeyTestButton.target = self
+        apiKeyTestButton.action = #selector(testApiKey)
+
+        apiKeyStatus.alignment = .left
+        apiKeyStatus.textColor = .secondaryLabelColor
+        apiKeyStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        apiKeyStatus.isEditable = false
+        apiKeyStatus.isBordered = false
+        apiKeyStatus.backgroundColor = .clear
+
+        // Done
         doneButton.bezelStyle = .rounded
-        doneButton.keyEquivalent = "\r"          // Return / Enter closes the window
+        doneButton.keyEquivalent = "\r"
         doneButton.target = self
         doneButton.action = #selector(closeWindow)
 
@@ -94,10 +146,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
         let grid = NSGridView(views: [
-            [micLabel, micPopup],
-            [dawLabel, dawPopup],
-            [volLabel, volumeSlider],
-            [NSGridCell.emptyContentView, makeVolumeFooter()]
+            [langLabel,  languagePopup],
+            [micLabel,   micPopup],
+            [dawLabel,   dawPopup],
+            [voiceLabel, voicePopup],
+            [NSGridCell.emptyContentView, voiceHint],
+            [volLabel,   volumeSlider],
+            [NSGridCell.emptyContentView, makeVolumeFooter()],
+            [apiLabel,   apiKeyField],
+            [NSGridCell.emptyContentView, makeApiKeyFooter()],
         ])
         grid.translatesAutoresizingMaskIntoConstraints = false
         grid.rowSpacing = 12
@@ -126,7 +183,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeVolumeFooter() -> NSView {
-        let stack = NSStackView(views: [volumeReadout, volumeDefaultButton])
+        let stack = NSStackView(views: [volumeReadout, testVoiceButton, volumeDefaultButton])
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        stack.alignment = .centerY
+        return stack
+    }
+
+    private func makeApiKeyFooter() -> NSView {
+        let stack = NSStackView(views: [apiKeyTestButton, apiKeyStatus])
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.alignment = .centerY
@@ -137,9 +202,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func populate() {
         let devices = CoreAudioDevice.listInputDevices()
+        populateLanguagePopup()
         populateMicPopup(devices: devices)
         populateDAWPopup(devices: devices)
+        populateVoicePopup()
         populateVolume()
+        populateApiKey()
+    }
+
+    private func populateLanguagePopup() {
+        languagePopup.removeAllItems()
+        let current = Config.language
+        for (i, lang) in Config.languages.enumerated() {
+            let title = i == 0 ? "\(lang.name) (default)" : lang.name
+            languagePopup.addItem(withTitle: title)
+            languagePopup.lastItem?.representedObject = lang.code
+        }
+        if let matched = languagePopup.itemArray.first(where: { ($0.representedObject as? String) == current }) {
+            languagePopup.select(matched)
+        } else {
+            languagePopup.selectItem(at: 0)
+        }
     }
 
     private func populateMicPopup(devices: [CoreAudioDevice.InputDevice]) {
@@ -158,6 +241,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         } else {
             micPopup.selectItem(at: 0)
         }
+        if Config.settings.micDeviceName == nil {
+            Config.setMicDeviceName((micPopup.selectedItem?.representedObject as? String) ?? "")
+        }
     }
 
     private func populateDAWPopup(devices: [CoreAudioDevice.InputDevice]) {
@@ -168,10 +254,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             dawPopup.addItem(withTitle: d.name)
             dawPopup.lastItem?.representedObject = d.name
         }
-
         let current = Config.dawDeviceName
-        // Pre-select: explicit empty → None; current match → that; else
-        // BlackHole 2ch if present; else first device; else None.
         if current.isEmpty {
             dawPopup.selectItem(at: 0)
         } else if let matched = dawPopup.itemArray.first(where: { ($0.representedObject as? String) == current }) {
@@ -184,6 +267,49 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             dawPopup.selectItem(at: 1)
         } else {
             dawPopup.selectItem(at: 0)
+        }
+        if Config.settings.dawDeviceName == nil {
+            Config.setDawDeviceName((dawPopup.selectedItem?.representedObject as? String) ?? "")
+        }
+    }
+
+    private func populateVoicePopup() {
+        // Prefer the per-language remembered voice; fall back to current popup selection or global setting.
+        let currentPopupVoice = voicePopup.selectedItem?.representedObject as? String
+        let remembered = Config.settings.voicePerLanguage?[Config.language]
+        let previousVoice = remembered ?? currentPopupVoice ?? Config.ttsVoiceName
+        voicePopup.removeAllItems()
+        voicePopup.addItem(withTitle: "System default")
+        voicePopup.lastItem?.representedObject = ""
+
+        let langCode = Config.language
+        // Show voices for the selected language family, sorted by BCP-47 locale
+        // (so en-AU, en-GB, en-IE, en-US group together) then by name within each.
+        // Use exact-code or "code-" prefix matching to avoid false matches (e.g.
+        // "it" must not match a hypothetical "ita-..." code).
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language == langCode || $0.language.hasPrefix(langCode + "-") }
+            .filter { !$0.identifier.hasPrefix("com.apple.eloquence") }
+            .filter {
+                guard #available(macOS 14, *) else { return true }
+                return !$0.voiceTraits.contains(.isNoveltyVoice)
+            }
+            .sorted {
+                if $0.language != $1.language { return $0.language < $1.language }
+                return $0.name < $1.name
+            }
+        for voice in voices {
+            // Display as "en-IE — Moira (Enhanced)" so the locale is visible.
+            let title = "\(voice.language) — \(voice.name)"
+            voicePopup.addItem(withTitle: title)
+            voicePopup.lastItem?.representedObject = voice.name
+        }
+
+        if let name = previousVoice, !name.isEmpty,
+           let matched = voicePopup.itemArray.first(where: { ($0.representedObject as? String) == name }) {
+            voicePopup.select(matched)
+        } else {
+            voicePopup.selectItem(at: 0)
         }
     }
 
@@ -199,7 +325,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func populateApiKey() {
+        originalApiKey = Config.settings.apiKey
+        apiKeyField.stringValue = Config.settings.apiKey ?? ""
+    }
+
     // MARK: - Actions
+
+    @objc private func languageChanged() {
+        let code = (languagePopup.selectedItem?.representedObject as? String) ?? "en"
+        Config.setLanguage(code)
+        populateVoicePopup()
+        // Restore the last-used voice for this language; fall back to first alphabetical.
+        let remembered = Config.settings.voicePerLanguage?[code]
+        if let name = remembered, !name.isEmpty,
+           let matched = voicePopup.itemArray.first(where: { ($0.representedObject as? String) == name }) {
+            voicePopup.select(matched)
+            Config.setTtsVoice(name)
+        } else if voicePopup.numberOfItems > 1 {
+            voicePopup.selectItem(at: 1)
+            let name = (voicePopup.selectedItem?.representedObject as? String) ?? ""
+            Config.setTtsVoice(name.isEmpty ? nil : name)
+        } else {
+            Config.setTtsVoice(nil)
+        }
+        speaker.stop()
+        speaker.speak(Self.voiceCheckPhrase)
+    }
 
     @objc private func micChanged() {
         let name = (micPopup.selectedItem?.representedObject as? String) ?? ""
@@ -213,16 +365,86 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         coordinator?.applyDAWDeviceChange()
     }
 
+    @objc private func voiceChanged() {
+        let name = (voicePopup.selectedItem?.representedObject as? String) ?? ""
+        Config.setTtsVoice(name.isEmpty ? nil : name)
+        speaker.stop()
+        speaker.speak(Self.voiceCheckPhrase)
+    }
+
     @objc private func volumeChanged() {
         let p = volumeSlider.doubleValue
         Config.setTtsVolumePercent(p)
         volumeReadout.stringValue = "\(Int(p.rounded()))%"
         volumeDefaultButton.isEnabled = true
+        if NSApp.currentEvent?.type == .leftMouseUp { testVoice() }
+    }
+
+    @objc private func testVoice() {
+        speaker.stop()
+        speaker.speak(Self.voiceCheckPhrase)
+    }
+
+    private static var voiceCheckPhrase: String {
+        switch Config.language {
+        case "fr": return "Studio Runner, vérification de la voix."
+        case "de": return "Studio Runner, Sprachtest."
+        case "es": return "Studio Runner, comprobación de voz."
+        case "it": return "Studio Runner, verifica della voce."
+        case "nl": return "Studio Runner, stemcontrole."
+        case "pt": return "Studio Runner, verificação de voz."
+        case "ja": return "スタジオランナー、音声確認。"
+        case "ko": return "스튜디오 러너, 음성 확인."
+        case "zh": return "Studio Runner，语音检查。"
+        default:   return "Studio Runner, voice check."
+        }
     }
 
     @objc private func useDefaultVolume() {
         Config.setTtsVolumePercent(nil)
         populateVolume()
+    }
+
+    @objc private func apiKeyCommitted() {
+        saveApiKeyIfChanged()
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === apiKeyField else { return }
+        saveApiKeyIfChanged()
+    }
+
+    private func saveApiKeyIfChanged() {
+        let entered = apiKeyField.stringValue
+        guard entered != (originalApiKey ?? "") else { return }
+        Config.setApiKey(entered.isEmpty ? nil : entered)
+        originalApiKey = Config.settings.apiKey
+        coordinator?.notifyApiKeySet()
+        apiKeyStatus.stringValue = ""
+    }
+
+    @objc private func testApiKey() {
+        saveApiKeyIfChanged()
+        guard Config.apiKey != nil else {
+            apiKeyStatus.stringValue = "✗ No API key set"
+            apiKeyStatus.textColor = .systemRed
+            return
+        }
+        apiKeyStatus.stringValue = "Testing…"
+        apiKeyStatus.textColor = .secondaryLabelColor
+        apiKeyTestButton.isEnabled = false
+        Task {
+            do {
+                try await AIClient.ping()
+                apiKeyStatus.stringValue = "✓ Working"
+                apiKeyStatus.textColor = .systemGreen
+            } catch {
+                let msg = (error as? AIClient.APIError)?.description ?? error.localizedDescription
+                apiKeyStatus.stringValue = "✗ \(msg)"
+                apiKeyStatus.textColor = .systemRed
+            }
+            apiKeyTestButton.isEnabled = true
+        }
     }
 
     @objc private func closeWindow() {

@@ -82,9 +82,9 @@ actor Consolidator {
 
         let updated: String
         do {
-            updated = try await DeepSeek.call(systemPrompt: Self.systemPrompt, userPrompt: user)
+            updated = try await AIClient.call(systemPrompt: Self.systemPrompt, userPrompt: user)
         } catch {
-            onLog("consolidate: DeepSeek failed — \(error)")
+            onLog("consolidate: AI call failed — \(error)")
             return
         }
 

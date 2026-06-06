@@ -15,19 +15,20 @@ enum SessionState: Equatable {
     case consolidating
     case error(String)
 
-    /// SF Symbol name shown in the menu bar.
+    /// SF Symbol name shown in the menu bar. Idle is overridden in StatusItem
+    /// with a composite waveform + coffee-cup image.
     var symbolName: String {
         switch self {
         case .notReady:          return "exclamationmark.triangle"
         case .idle:              return "waveform"
         case .learningMemo,
-             .learningAsk:       return "questionmark.circle"
+             .learningAsk:       return "hand.raised"
         case .recordingMemo,
-             .recordingAsk:      return "record.circle.fill"
+             .recordingAsk:      return "mic.fill"
         case .processingMemo,
              .askThinking,
              .consolidating:     return "waveform.path.ecg"
-        case .askSpeaking:       return "bubble.left.fill"
+        case .askSpeaking:       return "speaker.wave.2.fill"
         case .error:             return "exclamationmark.octagon"
         }
     }
@@ -42,7 +43,7 @@ enum SessionState: Equatable {
         case .recordingMemo:         return "Recording memo"
         case .processingMemo:        return "Transcribing memo"
         case .recordingAsk:          return "Recording question"
-        case .askThinking:           return "Asking DeepSeek…"
+        case .askThinking:           return "Thinking…"
         case .askSpeaking:           return "Speaking"
         case .consolidating:         return "Consolidating notes"
         case .error(let msg):        return "Error: \(msg)"

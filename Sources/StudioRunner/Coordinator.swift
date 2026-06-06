@@ -30,15 +30,21 @@ final class Coordinator {
     // MARK: - Bootstrap
 
     func bootstrap() {
-        EnvFile.load(projectRoot: Config.projectRoot)
+        Config.loadProjectSettings()
         do {
             try Layout.ensure()
         } catch {
             state.set(.notReady(reason: "can't write to project folder (\(Config.projectRoot.lastPathComponent))"))
             return
         }
+        // Solidify the project settings file if it doesn't exist yet (first launch
+        // after upgrading, or opening a project for the first time).
+        let settingsURL = ProjectSettings.projectFileURL(root: Config.projectRoot)
+        if !FileManager.default.fileExists(atPath: settingsURL.path) {
+            Config.saveSettings()
+        }
         if Config.apiKey == nil {
-            state.set(.notReady(reason: "STUDIORUNNER_AI_API_KEY missing — set in .env or environment"))
+            state.set(.notReady(reason: "API key missing — open Settings to add it"))
             return
         }
         state.set(.idle)
@@ -54,10 +60,13 @@ final class Coordinator {
         panel.prompt = "Choose"
         panel.message = "Pick the project folder where studiorunner.md should live."
         NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url {
-            Config.setProjectRoot(url)
-            bootstrap()
-        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let isNew = !FileManager.default.fileExists(
+            atPath: ProjectSettings.projectFileURL(root: url).path
+        )
+        Config.setProjectRoot(url)
+        bootstrap()
+        if isNew { showSettings() }
     }
 
     // MARK: - Session lifecycle
@@ -233,6 +242,13 @@ final class Coordinator {
         settingsWindow?.show()
     }
 
+    /// Called from the settings window after the API key is saved. Transitions
+    /// out of `.notReady` without requiring a restart if the key was the only
+    /// missing piece.
+    func notifyApiKeySet() {
+        if case .notReady = state.state { bootstrap() }
+    }
+
     /// Called from the settings window when the DAW device name changes. If a
     /// session is currently running, bounce it so the DAW recorder rebinds.
     /// Memo + ask flows hold a reference to the old DAW buffer, so a full
@@ -261,7 +277,7 @@ final class Coordinator {
     func openChat()  { NSWorkspace.shared.open(Config.chatFile) }
     func openRaw()   { NSWorkspace.shared.open(Config.rawFile) }
     func revealProjectInFinder() {
-        NSWorkspace.shared.activateFileViewerSelecting([Config.projectRoot])
+        NSWorkspace.shared.open(Config.projectRoot)
     }
 
     func runPrune() {

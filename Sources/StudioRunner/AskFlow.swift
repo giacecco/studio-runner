@@ -78,17 +78,15 @@ actor AskFlow {
 
         let answer: String
         do {
-            answer = try await DeepSeek.call(systemPrompt: Self.systemPrompt, userPrompt: user)
+            answer = try await AIClient.call(systemPrompt: Self.systemPrompt, userPrompt: user)
         } catch {
-            onLog("ask: DeepSeek call failed — \(error)"); onState(.idle); return
+            onLog("ask: AI call failed — \(error)"); onState(.idle); return
         }
         onLog("A: \(answer)")
         appendChat(question: question, answer: answer)
 
-        if Config.ttsEnabled {
-            onState(.askSpeaking)
-            await speaker.speak(answer)
-        }
+        onState(.askSpeaking)
+        await speaker.speak(answer)
         onState(.idle)
     }
 
