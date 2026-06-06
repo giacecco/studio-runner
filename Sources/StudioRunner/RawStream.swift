@@ -1,19 +1,18 @@
 import Foundation
 
 /// Append-only stream of utterances at `.studiorunner.d/raw.md`. Each entry
-/// is a markdown block delimited by `---`, headed by a `## YY-MM-DD HH:MM:SS`
+/// is a markdown block delimited by `---`, headed by a `## YYYY-MM-DD HH:MM:SS`
 /// line and metadata fields the consolidator reads back.
 ///
 /// The first line is a watermark comment:
 ///
-///     <!-- consolidated_through: 260601193045 -->
+///     <!-- consolidated_through: 2026-06-01 19:30:45 -->
 ///
 /// The consolidator advances the watermark after writing studiorunner.md;
-/// `prune` removes entries whose `ts` is `<=` the watermark.
+/// `prune` removes entries whose heading timestamp is `<=` the watermark.
 struct RawEntry {
-    let ts: String          // YYMMDDHHMMSS
-    let human: String       // YY-MM-DD HH:MM:SS
-    let body: String        // full block including `##`/`ts:`/etc.
+    let human: String       // YYYY-MM-DD HH:MM:SS
+    let body: String        // full block including `##` and metadata fields
     let dawPosition: String? // DAW timeline position e.g. "2:03", nil if MTC unavailable
     let audioRel: String?
     let screenshotRel: String?
@@ -24,7 +23,7 @@ struct RawStreamSnapshot {
     let entries: [RawEntry]
 
     var unprocessed: [RawEntry] {
-        watermark == "none" ? entries : entries.filter { $0.ts > watermark }
+        watermark == "none" ? entries : entries.filter { $0.human > watermark }
     }
 }
 
@@ -70,15 +69,11 @@ enum RawStream {
     }
 
     private static func parseEntry(block: String) -> RawEntry? {
-        var ts: String?
         var human: String?
         var dawPosition: String?
         var audio: String?
         var screenshot: String?
         for line in block.components(separatedBy: "\n") {
-            if ts == nil, line.hasPrefix("ts:") {
-                ts = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            }
             if human == nil, line.hasPrefix("## ") {
                 human = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
             }
@@ -92,8 +87,8 @@ enum RawStream {
                 screenshot = line.dropFirst("screenshot:".count).trimmingCharacters(in: .whitespaces)
             }
         }
-        guard let ts = ts, let human = human else { return nil }
-        return RawEntry(ts: ts, human: human, body: block,
+        guard let human = human else { return nil }
+        return RawEntry(human: human, body: block,
                         dawPosition: dawPosition, audioRel: audio, screenshotRel: screenshot)
     }
 
@@ -111,7 +106,7 @@ enum RawStream {
     static func append(_ entry: NewEntry) throws {
         try Layout.ensure()
         let human = humanise(timestamp: entry.timestamp)
-        var lines: [String] = ["", "## \(human)", "ts: \(entry.timestamp)"]
+        var lines: [String] = ["", "## \(human)"]
         if let pos = entry.dawPosition { lines.append("daw_pos: \(pos)") }
         if let a = entry.audioRel { lines.append("audio: \(a)") }
         if let s = entry.screenshotRel { lines.append("screenshot: \(s)") }
@@ -155,13 +150,13 @@ enum RawStream {
 
     // MARK: - Prune
 
-    /// Drop entries whose ts is at or before the current watermark.
+    /// Drop entries whose heading timestamp is at or before the current watermark.
     @discardableResult
     static func prune() throws -> Int {
         let content = (try? String(contentsOf: Config.rawFile, encoding: .utf8)) ?? ""
         let snap = parse(content)
         if snap.watermark == "none" { return 0 }
-        let kept = snap.entries.filter { $0.ts > snap.watermark }
+        let kept = snap.entries.filter { $0.human > snap.watermark }
         let dropped = snap.entries.count - kept.count
         let header = "<!-- consolidated_through: \(snap.watermark) -->"
         let body = kept.map { "\($0.body)\n---" }.joined(separator: "\n\n")

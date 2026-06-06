@@ -93,7 +93,7 @@ actor Consolidator {
         let toWrite = updated.hasSuffix("\n") ? updated : updated + "\n"
         do {
             try toWrite.write(to: Config.notesFile, atomically: true, encoding: .utf8)
-            let newWatermark = unprocessed.last!.ts
+            let newWatermark = unprocessed.last!.human
             try RawStream.advanceWatermark(to: newWatermark)
         } catch {
             onLog("consolidate: write failed — \(error)")

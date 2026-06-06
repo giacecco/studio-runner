@@ -1,7 +1,7 @@
 import Foundation
 
 enum Timestamps {
-    /// YYMMDDHHMMSS — used for filenames and the `ts:` field in raw entries.
+    /// YYMMDDHHMMSS — used for filenames.
     static func compact(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_GB_POSIX")
@@ -9,11 +9,11 @@ enum Timestamps {
         return f.string(from: date)
     }
 
-    /// YY-MM-DD HH:MM:SS — header line in raw entries.
+    /// YYYY-MM-DD HH:MM:SS — header lines in raw entries and chat.md.
     static func human(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_GB_POSIX")
-        f.dateFormat = "yy-MM-dd HH:mm:ss"
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return f.string(from: date)
     }
 
