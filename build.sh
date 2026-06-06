@@ -46,6 +46,9 @@ cp Resources/Info.plist "${OUT_DIR}/Contents/Info.plist"
 if [[ -f Resources/StudioRunner.icns ]]; then
     cp Resources/StudioRunner.icns "${OUT_DIR}/Contents/Resources/"
 fi
+if [[ -f Resources/StudioRunnerDoc.icns ]]; then
+    cp Resources/StudioRunnerDoc.icns "${OUT_DIR}/Contents/Resources/"
+fi
 
 if [[ -n "${SIGN_IDENTITY}" ]]; then
     echo "==> codesign with '${SIGN_IDENTITY}'"

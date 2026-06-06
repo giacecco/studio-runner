@@ -98,9 +98,12 @@ actor MemoFlow {
             let dawStart = startMs - Config.dawPrerollSec * 1000
             if let dawData = dawBuffer.extract(startMs: dawStart, endMs: endMs) {
                 do {
+                    // Derive sample rate from the buffer's live bytesPerSecond, which
+                    // the tap updates on its first callback to the real hardware rate.
+                    let dawSR = dawBuffer.bytesPerSecond / Int(Config.dawChannels) / MemoryLayout<Int16>.size
                     try WAVWriter.write(
                         samples: dawData,
-                        sampleRate: Int(Config.dawSampleRate),
+                        sampleRate: dawSR,
                         channels: Int(Config.dawChannels),
                         bitDepth: Config.dawBitDepth,
                         to: audioAbs

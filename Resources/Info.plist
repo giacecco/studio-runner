@@ -26,5 +26,42 @@
     <string>Studio Runner captures your voice for transcription and DAW commentary.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Studio Runner transcribes your voice notes locally via whisper-cpp.</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Studio Runner Project</string>
+            <key>UTTypeIconFile</key>
+            <string>StudioRunnerDoc</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.giacecco.studiorunner.project</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>studiorunner</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeIconFile</key>
+            <string>StudioRunnerDoc</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.giacecco.studiorunner.project</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

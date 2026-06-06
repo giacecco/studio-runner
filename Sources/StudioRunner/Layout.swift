@@ -4,7 +4,7 @@ import Foundation
 ///
 ///     <projectRoot>/studiorunner.md            ← consolidated state
 ///     <projectRoot>/.studiorunner.d/
-///       system.md                              ← per-project context for DeepSeek
+///       system.md                              ← per-project context for the AI
 ///       raw.md                                 ← append-only raw stream (with watermark)
 ///       chat.md                                ← Q&A transcript (created on first ask)
 ///       screenshots/<ts>.png                   ← screenshot per memo
@@ -28,7 +28,7 @@ enum Layout {
             # Project context
 
             Edit this file with general context about this music project. Its
-            contents are prepended to every DeepSeek system prompt — both
+            contents are prepended to every AI system prompt — both
             consolidation and Q&A — so the assistant gets your context on every
             call without you having to repeat it.
 
@@ -39,6 +39,10 @@ enum Layout {
             - Collaborators (artist, engineer, label)
             - Deadlines and milestones
             - Strong preferences worth holding the line on
+
+            When answering questions, look for and read any .md and .txt files
+            in the project folder — they may contain relevant notes, lyrics,
+            chord sheets, or references the producer has left there.
 
             Delete this guidance block once you've added your own.
             """

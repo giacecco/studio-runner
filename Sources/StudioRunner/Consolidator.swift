@@ -48,8 +48,10 @@ actor Consolidator {
 
     ## Session timeline
     Condensed chronological summary, one bullet per meaningful utterance, oldest first. Format each bullet as:
-    - HH:MM — short paraphrase ([audio](<audio path>) · [screenshot](<screenshot path>))
-    where the paths come verbatim from the entry's "audio:" and "screenshot:" fields.
+    - <position> — short paraphrase ([audio](<audio path>) · [screenshot](<screenshot path>), YY-MM-DD HH:MM)
+    where <position> is the entry's daw_pos value if present (e.g. "2:03"), otherwise HH:MM from the ## header.
+    The date in parentheses is always YY-MM-DD HH:MM taken from the ## header line.
+    Paths come verbatim from the entry's "audio:" and "screenshot:" fields. Omit asset links if neither is present.
 
     Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.
     """

@@ -18,8 +18,8 @@ struct ProjectSettings: Codable {
     var midiDeviceName: String?    // nil = accept from any MIDI device
     var midiBindings: MIDIBindingsStore.Pair?
     var mtcSourceName: String?    // nil = accept MTC from any source
-    var aiEndpoint: String?       // nil = DeepSeek default
-    var aiModel: String?          // nil = "deepseek-chat"
+    var aiEndpoint: String?       // nil = default endpoint (DeepSeek-compatible)
+    var aiModel: String?          // nil = default model
     /// Last-used voice name per ISO 639-1 language code, e.g. ["en": "Moira (Enhanced)", "it": "Alice"]
     var voicePerLanguage: [String: String]?
 

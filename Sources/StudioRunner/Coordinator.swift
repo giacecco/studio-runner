@@ -444,6 +444,6 @@ final class Coordinator {
     // MARK: - Logging
 
     private func log(_ message: String) {
-        FileHandle.standardError.write(Data(("studio-runner: " + message + "\n").utf8))
+        NSLog("studio-runner: %@", message)
     }
 }

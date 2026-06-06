@@ -1,13 +1,16 @@
+import AppKit
+import AVFoundation
 import Foundation
 
 /// Handles one ask press end-to-end:
 ///   1. Extract the mic clip from the rolling buffer
 ///   2. Transcribe it
-///   3. Build a DeepSeek prompt with the current studiorunner.md plus the
+///   3. Build a prompt with the current studiorunner.md plus the
 ///      post-watermark tail of raw.md (so a freshly-spoken note can be cited
 ///      even before consolidation has caught up)
 ///   4. Append the Q&A to chat.md
 ///   5. Speak the reply via AVSpeechSynthesizer
+///   6. Execute any [PLAY: path] / [SHOW: path] tags from the answer after TTS
 actor AskFlow {
     private let micBuffer: RollingBuffer
     private let speaker: Speaker
@@ -28,7 +31,15 @@ actor AskFlow {
 
     private static let systemPrompt = """
     You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
+    When the producer asks to hear a recording, include [PLAY: <relative-path>] in your response — for example [PLAY: audio/260606141523.wav]. The path comes verbatim from the audio: field in the raw notes or from the (audio/...) link in the session timeline. Never invent a path.
+    When the producer asks to see a screenshot, include [SHOW: <relative-path>] in your response — for example [SHOW: screenshots/260606141523.png]. The path comes verbatim from the screenshot: field in the raw notes or from the (screenshot/...) link in the session timeline. Never invent a path.
+    All [PLAY:] and [SHOW:] tags are stripped before your response is spoken; the referenced files are opened after TTS finishes, in the order they appear.
     """
+
+    // Regex compiled once at class load time.
+    private static let playRe  = try! NSRegularExpression(pattern: #"\[PLAY:\s*([^\]]+)\]"#)
+    private static let showRe  = try! NSRegularExpression(pattern: #"\[SHOW:\s*([^\]]+)\]"#)
+    private static let allRe   = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]"#)
 
     func handle(startMs: Double, endMs: Double) async {
         onState(.processingMemo)
@@ -85,10 +96,57 @@ actor AskFlow {
         onLog("A: \(answer)")
         appendChat(question: question, answer: answer)
 
+        let actions = Self.mediaActions(from: answer)
+        let spokenText = Self.stripMediaTags(from: answer)
+
         onState(.askSpeaking)
-        await speaker.speak(answer)
+        await speaker.speak(spokenText.isEmpty ? answer : spokenText)
+
+        for action in actions {
+            switch action {
+            case .audio(let url):      await playClip(at: url)
+            case .screenshot(let url): await openInPreview(at: url)
+            }
+        }
+
         onState(.idle)
     }
+
+    // MARK: - Tag parsing
+
+    private enum MediaAction {
+        case audio(URL)
+        case screenshot(URL)
+    }
+
+    private static func mediaActions(from text: String) -> [MediaAction] {
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        var tagged: [(loc: Int, action: MediaAction)] = []
+
+        for m in playRe.matches(in: text, range: full) where m.numberOfRanges > 1 {
+            let r = m.range(at: 1)
+            guard r.location != NSNotFound else { continue }
+            let path = ns.substring(with: r).trimmingCharacters(in: .whitespaces)
+            tagged.append((m.range.location, .audio(Config.projectRoot.appendingPathComponent(path))))
+        }
+        for m in showRe.matches(in: text, range: full) where m.numberOfRanges > 1 {
+            let r = m.range(at: 1)
+            guard r.location != NSNotFound else { continue }
+            let path = ns.substring(with: r).trimmingCharacters(in: .whitespaces)
+            tagged.append((m.range.location, .screenshot(Config.projectRoot.appendingPathComponent(path))))
+        }
+        return tagged.sorted { $0.loc < $1.loc }.map(\.action)
+    }
+
+    private static func stripMediaTags(from text: String) -> String {
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        return allRe.stringByReplacingMatches(in: text, range: full, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Chat log
 
     private func appendChat(question: String, answer: String) {
         let block = "\n## \(Timestamps.human())\n**Q:** \(question)\n\n**A:** \(answer)\n\n---\n"
@@ -100,5 +158,36 @@ actor AskFlow {
         } else {
             try? block.write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+}
+
+// MARK: - Media playback (MainActor: AVAudioPlayer and NSWorkspace need main thread)
+
+@MainActor
+private func playClip(at url: URL) async {
+    guard FileManager.default.fileExists(atPath: url.path),
+          let player = try? AVAudioPlayer(contentsOf: url) else { return }
+    let relay = AudioFinishRelay()
+    player.delegate = relay
+    player.play()
+    await relay.waitForFinish()
+}
+
+@MainActor
+private func openInPreview(at url: URL) {
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    NSWorkspace.shared.open(url)
+}
+
+private final class AudioFinishRelay: NSObject, AVAudioPlayerDelegate {
+    private var cont: CheckedContinuation<Void, Never>?
+
+    func waitForFinish() async {
+        await withCheckedContinuation { cont = $0 }
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully _: Bool) {
+        cont?.resume()
+        cont = nil
     }
 }

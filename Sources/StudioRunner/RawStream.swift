@@ -11,9 +11,10 @@ import Foundation
 /// The consolidator advances the watermark after writing studiorunner.md;
 /// `prune` removes entries whose `ts` is `<=` the watermark.
 struct RawEntry {
-    let ts: String        // YYMMDDHHMMSS
-    let human: String     // YY-MM-DD HH:MM:SS
-    let body: String      // full block including `##`/`ts:`/etc.
+    let ts: String          // YYMMDDHHMMSS
+    let human: String       // YY-MM-DD HH:MM:SS
+    let body: String        // full block including `##`/`ts:`/etc.
+    let dawPosition: String? // DAW timeline position e.g. "2:03", nil if MTC unavailable
     let audioRel: String?
     let screenshotRel: String?
 }
@@ -71,6 +72,7 @@ enum RawStream {
     private static func parseEntry(block: String) -> RawEntry? {
         var ts: String?
         var human: String?
+        var dawPosition: String?
         var audio: String?
         var screenshot: String?
         for line in block.components(separatedBy: "\n") {
@@ -80,6 +82,9 @@ enum RawStream {
             if human == nil, line.hasPrefix("## ") {
                 human = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
             }
+            if dawPosition == nil, line.hasPrefix("daw_pos:") {
+                dawPosition = line.dropFirst("daw_pos:".count).trimmingCharacters(in: .whitespaces)
+            }
             if audio == nil, line.hasPrefix("audio:") {
                 audio = line.dropFirst("audio:".count).trimmingCharacters(in: .whitespaces)
             }
@@ -88,7 +93,8 @@ enum RawStream {
             }
         }
         guard let ts = ts, let human = human else { return nil }
-        return RawEntry(ts: ts, human: human, body: block, audioRel: audio, screenshotRel: screenshot)
+        return RawEntry(ts: ts, human: human, body: block,
+                        dawPosition: dawPosition, audioRel: audio, screenshotRel: screenshot)
     }
 
     // MARK: - Append
@@ -96,6 +102,7 @@ enum RawStream {
     struct NewEntry {
         let timestamp: String        // YYMMDDHHMMSS
         let micText: String
+        let dawPosition: String?     // DAW timeline position e.g. "2:03", nil if MTC unavailable
         let audioRel: String?
         let screenshotRel: String?
         let dawText: String?
@@ -105,6 +112,7 @@ enum RawStream {
         try Layout.ensure()
         let human = humanise(timestamp: entry.timestamp)
         var lines: [String] = ["", "## \(human)", "ts: \(entry.timestamp)"]
+        if let pos = entry.dawPosition { lines.append("daw_pos: \(pos)") }
         if let a = entry.audioRel { lines.append("audio: \(a)") }
         if let s = entry.screenshotRel { lines.append("screenshot: \(s)") }
         lines.append("The Producer: \(entry.micText)")

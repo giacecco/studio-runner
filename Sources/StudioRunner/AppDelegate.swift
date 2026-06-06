@@ -7,6 +7,10 @@ import Foundation
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: Coordinator!
     private var statusController: StatusItemController!
+    // application(_:open:) can fire before applicationDidFinishLaunching when the
+    // app is launched by a file double-click. Stash the URL and consume it in
+    // applicationDidFinishLaunching rather than crashing on a nil coordinator.
+    private var pendingOpenURL: URL?
 
     static func main() {
         let app = NSApplication.shared
@@ -20,7 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMainMenu()
         coordinator = Coordinator()
         statusController = StatusItemController(coordinator: coordinator)
-        coordinator.bootstrap()
+        if let url = pendingOpenURL {
+            pendingOpenURL = nil
+            coordinator.openProjectFile(url)
+        } else {
+            coordinator.bootstrap()
+        }
         // Request microphone permission at startup so the system dialog appears
         // at a predictable moment, not mid-interaction (e.g. during TTS voice
         // testing in Settings, which also initialises AVAudioEngine on Sequoia).
@@ -47,6 +56,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
 
         NSApp.mainMenu = main
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { $0.pathExtension == "studiorunner" }) else { return }
+        if coordinator == nil {
+            pendingOpenURL = url
+        } else {
+            coordinator.openProjectFile(url)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

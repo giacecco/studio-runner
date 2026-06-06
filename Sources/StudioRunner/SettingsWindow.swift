@@ -4,8 +4,8 @@ import Foundation
 
 /// Modeless settings window. Controls: language, producer microphone, DAW
 /// input device, AI voice (filtered to the chosen language), TTS volume, and
-/// Anthropic-compatible API key. Edits write to `studiorunner.json`
-/// immediately via `Config` setters — there is no Apply / Cancel.
+/// Anthropic-compatible API key. Edits write to the project's `.studiorunner`
+/// file immediately via `Config` setters — there is no Apply / Cancel.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private weak var coordinator: Coordinator?
@@ -13,6 +13,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let languagePopup    = NSPopUpButton(frame: .zero, pullsDown: false)
     private let micPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
     private let dawPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let midiPopup        = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let mtcPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
     private let voicePopup       = NSPopUpButton(frame: .zero, pullsDown: false)
     private let volumeSlider     = NSSlider()
     private let volumeReadout    = NSTextField(labelWithString: "")
@@ -28,7 +30,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 510),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 625),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -73,6 +75,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         dawLabel.alignment = .right
         dawPopup.target = self
         dawPopup.action = #selector(dawChanged)
+
+        // MIDI controller device
+        let midiLabel = NSTextField(labelWithString: "MIDI controller:")
+        midiLabel.alignment = .right
+        midiPopup.target = self
+        midiPopup.action = #selector(midiDeviceChanged)
+
+        // MTC source
+        let mtcLabel = NSTextField(labelWithString: "MTC source:")
+        mtcLabel.alignment = .right
+        mtcPopup.target = self
+        mtcPopup.action = #selector(mtcSourceChanged)
+
+        let mtcHint = NSTextField(labelWithString:
+            "Enable MTC output in your DAW and route it to the IAC Driver (Audio MIDI Setup → IAC Driver → Device is online). The app will then display DAW timeline positions on each memo.")
+        mtcHint.textColor = .secondaryLabelColor
+        mtcHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        mtcHint.isEditable = false
+        mtcHint.isBordered = false
+        mtcHint.backgroundColor = .clear
+        mtcHint.lineBreakMode = .byWordWrapping
+        mtcHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // Voice
         let voiceLabel = NSTextField(labelWithString: "AI voice:")
@@ -149,6 +173,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             [langLabel,  languagePopup],
             [micLabel,   micPopup],
             [dawLabel,   dawPopup],
+            [midiLabel,  midiPopup],
+            [mtcLabel,   mtcPopup],
+            [NSGridCell.emptyContentView, mtcHint],
             [voiceLabel, voicePopup],
             [NSGridCell.emptyContentView, voiceHint],
             [volLabel,   volumeSlider],
@@ -205,6 +232,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         populateLanguagePopup()
         populateMicPopup(devices: devices)
         populateDAWPopup(devices: devices)
+        populateMidiPopup()
+        populateMtcPopup()
         populateVoicePopup()
         populateVolume()
         populateApiKey()
@@ -270,6 +299,42 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         if Config.settings.dawDeviceName == nil {
             Config.setDawDeviceName((dawPopup.selectedItem?.representedObject as? String) ?? "")
+        }
+    }
+
+    private func populateMidiPopup() {
+        midiPopup.removeAllItems()
+        midiPopup.addItem(withTitle: "Any (all devices)")
+        midiPopup.lastItem?.representedObject = ""
+        for name in MIDIClient.listSourceNames() {
+            midiPopup.addItem(withTitle: name)
+            midiPopup.lastItem?.representedObject = name
+        }
+        let current = Config.midiDeviceName ?? ""
+        if current.isEmpty {
+            midiPopup.selectItem(at: 0)
+        } else if let matched = midiPopup.itemArray.first(where: { ($0.representedObject as? String) == current }) {
+            midiPopup.select(matched)
+        } else {
+            midiPopup.selectItem(at: 0)
+        }
+    }
+
+    private func populateMtcPopup() {
+        mtcPopup.removeAllItems()
+        mtcPopup.addItem(withTitle: "Any (accept from all sources)")
+        mtcPopup.lastItem?.representedObject = ""
+        for name in MIDIClient.listSourceNames() {
+            mtcPopup.addItem(withTitle: name)
+            mtcPopup.lastItem?.representedObject = name
+        }
+        let current = Config.mtcSourceName ?? ""
+        if current.isEmpty {
+            mtcPopup.selectItem(at: 0)
+        } else if let matched = mtcPopup.itemArray.first(where: { ($0.representedObject as? String) == current }) {
+            mtcPopup.select(matched)
+        } else {
+            mtcPopup.selectItem(at: 0)
         }
     }
 
@@ -350,7 +415,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             Config.setTtsVoice(nil)
         }
         speaker.stop()
-        speaker.speak(Self.voiceCheckPhrase)
+        Task { await self.speaker.speak(Self.voiceCheckPhrase) }
     }
 
     @objc private func micChanged() {
@@ -365,11 +430,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         coordinator?.applyDAWDeviceChange()
     }
 
+    @objc private func midiDeviceChanged() {
+        let name = (midiPopup.selectedItem?.representedObject as? String) ?? ""
+        Config.setMidiDeviceName(name.isEmpty ? nil : name)
+        coordinator?.applyMidiDeviceChange()
+    }
+
+    @objc private func mtcSourceChanged() {
+        let name = (mtcPopup.selectedItem?.representedObject as? String) ?? ""
+        Config.setMtcSourceName(name.isEmpty ? nil : name)
+        coordinator?.applyMtcSourceChange()
+    }
+
     @objc private func voiceChanged() {
         let name = (voicePopup.selectedItem?.representedObject as? String) ?? ""
         Config.setTtsVoice(name.isEmpty ? nil : name)
         speaker.stop()
-        speaker.speak(Self.voiceCheckPhrase)
+        Task { await self.speaker.speak(Self.voiceCheckPhrase) }
     }
 
     @objc private func volumeChanged() {
@@ -382,7 +459,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func testVoice() {
         speaker.stop()
-        speaker.speak(Self.voiceCheckPhrase)
+        Task { await self.speaker.speak(Self.voiceCheckPhrase) }
     }
 
     private static var voiceCheckPhrase: String {

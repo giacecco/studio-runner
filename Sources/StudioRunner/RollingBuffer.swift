@@ -12,11 +12,11 @@ import Foundation
 /// `statSync(rolling.raw).size / bytesPerSec` derivation, but in memory.
 final class RollingBuffer {
     let capacityBytes: Int
-    let bytesPerSecond: Int
+    private(set) var bytesPerSecond: Int
 
     private var store: UnsafeMutableRawPointer
     private var writeOffset: Int = 0
-    private var totalBytesWritten: Int = 0
+    private(set) var totalBytesWritten: Int = 0
     private let lock = NSLock()
 
     init(seconds: Double, bytesPerSecond: Int) {
@@ -30,6 +30,11 @@ final class RollingBuffer {
 
     deinit {
         store.deallocate()
+    }
+
+    func updateBytesPerSecond(_ bps: Int) {
+        lock.lock(); defer { lock.unlock() }
+        bytesPerSecond = bps
     }
 
     func append(_ bytes: UnsafeRawBufferPointer) {

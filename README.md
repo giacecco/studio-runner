@@ -59,8 +59,8 @@ The first launch will:
 Open **Settings** (menu bar icon → Settings…, or ⌘,) and paste your key into
 the API key field. The menu bar item shows "Not ready" until the key is saved.
 
-The key is stored inside the `.studiorunner` project file alongside all other
-settings — no separate `.env` file needed.
+The key is stored inside the project file (ending in `.studiorunner`) alongside all other
+settings.
 
 ## Project layout once a session has run
 
