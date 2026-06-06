@@ -45,9 +45,11 @@ enum MIDIError: Error {
 /// CoreMIDI's read callback fires on a high-priority audio thread; the
 /// wrapper hops to a private serial queue before fanning out to subscribers,
 /// so subscriber code can safely touch shared state.
-final class MIDIClient {
+final class MIDIClient: @unchecked Sendable {
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
+    private var virtualSource      = MIDIEndpointRef()  // "StudioRunner" source — Bitwig listens here
+    private var virtualDestination = MIDIEndpointRef()  // "StudioRunner" destination — satisfies Bitwig's output requirement
     private var sources: [MIDIEndpointRef] = []
     private(set) var sourceNames: [String] = []
 
@@ -61,6 +63,21 @@ final class MIDIClient {
             self?.read(pktList: pktList, srcRefCon: srcRefCon)
         }
         guard status == noErr else { throw MIDIError.portFailed(status) }
+        MIDISourceCreate(client, "StudioRunner" as CFString, &virtualSource)
+        MIDIDestinationCreateWithBlock(client, "StudioRunner" as CFString, &virtualDestination) { _, _ in }
+    }
+
+    /// Send CC 119 ch16 on the "StudioRunner" virtual source to signal Bitwig that the ask flow is done.
+    func signalAskDone() {
+        guard virtualSource != 0 else { return }
+        var packet = MIDIPacket()
+        packet.timeStamp = 0
+        packet.length = 3
+        packet.data.0 = 0xBF  // CC, channel 15 (0-indexed)
+        packet.data.1 = 119
+        packet.data.2 = 127
+        var packetList = MIDIPacketList(numPackets: 1, packet: packet)
+        MIDIReceived(virtualSource, &packetList)
     }
 
     func openAllSources() throws {
@@ -92,6 +109,8 @@ final class MIDIClient {
         sources.removeAll()
         sourceNames.removeAll()
         queue.sync { handlers.removeAll() }
+        if virtualDestination != 0 { MIDIEndpointDispose(virtualDestination); virtualDestination = 0 }
+        if virtualSource != 0 { MIDIEndpointDispose(virtualSource); virtualSource = 0 }
         if inputPort != 0 { MIDIPortDispose(inputPort); inputPort = 0 }
         if client != 0 { MIDIClientDispose(client); client = 0 }
     }

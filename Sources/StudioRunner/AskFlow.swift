@@ -17,19 +17,22 @@ actor AskFlow {
     private let onState: (SessionState) -> Void
     private let onLog: (String) -> Void
     private let onClearSession: (@Sendable () -> Void)?
+    private let onDone: (@Sendable () -> Void)?
 
     init(
         mic: RollingBuffer,
         speaker: Speaker,
         onState: @escaping (SessionState) -> Void,
         onLog: @escaping (String) -> Void,
-        onClearSession: (@Sendable () -> Void)? = nil
+        onClearSession: (@Sendable () -> Void)? = nil,
+        onDone: (@Sendable () -> Void)? = nil
     ) {
         self.micBuffer = mic
         self.speaker = speaker
         self.onState = onState
         self.onLog = onLog
         self.onClearSession = onClearSession
+        self.onDone = onDone
     }
 
     private static let systemPrompt = """
@@ -45,8 +48,11 @@ actor AskFlow {
     private static let showRe        = try! NSRegularExpression(pattern: #"\[SHOW:\s*([^\]]+)\]"#)
     private static let clearRe       = try! NSRegularExpression(pattern: #"\[CLEAR_SESSION\]"#)
     private static let allRe         = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]|\[CLEAR_SESSION\]"#)
+    // Catches bare paths, markdown links/images, and bare timestamp filenames the AI echoes from context.
+    private static let fileRefRe     = try! NSRegularExpression(pattern: #"!?\[[^\]]*\]\([^)]*\)|(?:\.studiorunner\.d/)?(?:audio|screenshots)/\S+|\b\d{12}\.(?:wav|png)\b"#)
 
     func handle(startMs: Double, endMs: Double) async {
+        defer { onDone?() }
         onState(.processingMemo)
 
         let micStart = startMs - Config.micPrerollSec * 1000
@@ -104,8 +110,11 @@ actor AskFlow {
         let actions = Self.mediaActions(from: answer)
         let spokenText = Self.stripMediaTags(from: answer)
 
-        onState(.askSpeaking)
-        await speaker.speak(spokenText.isEmpty ? answer : spokenText)
+        let textToSpeak = spokenText.isEmpty && !actions.isEmpty ? "OK" : spokenText
+        if !textToSpeak.isEmpty {
+            onState(.askSpeaking)
+            await speaker.speak(textToSpeak)
+        }
 
         for action in actions {
             switch action {
@@ -152,7 +161,10 @@ actor AskFlow {
     private static func stripMediaTags(from text: String) -> String {
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)
-        return allRe.stringByReplacingMatches(in: text, range: full, withTemplate: "")
+        let pass1 = allRe.stringByReplacingMatches(in: text, range: full, withTemplate: "")
+        let ns2 = pass1 as NSString
+        let full2 = NSRange(location: 0, length: ns2.length)
+        return fileRefRe.stringByReplacingMatches(in: pass1, range: full2, withTemplate: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

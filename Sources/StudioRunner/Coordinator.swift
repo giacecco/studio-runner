@@ -274,6 +274,9 @@ final class Coordinator {
             onLog: onLogBg,
             onClearSession: { [weak self] in
                 Task { @MainActor in self?.clearSessionHeadless() }
+            },
+            onDone: { [midi = self.midi] in
+                midi?.signalAskDone()
             }
         )
         self.consolidator = consolidator
