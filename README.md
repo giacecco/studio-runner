@@ -63,6 +63,25 @@ the API key field. The menu bar item shows "Not ready" until the key is saved.
 The key is stored inside the project file (ending in `.studiorunner`) alongside all other
 settings.
 
+## Language
+
+Studio Runner defaults to English. To work in another language, open
+**Settings → Session language** and pick from the list (French, German,
+Spanish, Italian, Dutch, Portuguese, Japanese, Korean, Chinese).
+
+Changing the language does three things at once:
+
+- **Transcription** — Whisper is told which language to expect, improving
+  accuracy. Non-English sessions require the multilingual model
+  (`ggml-medium.bin`) instead of the English-only one:
+  ```bash
+  bash /opt/homebrew/share/whisper-cpp/models/download-ggml-model.sh medium
+  ```
+- **AI replies** — the assistant is instructed to write everything
+  (notes, consolidated state, Q&A) in the chosen language.
+- **TTS voice** — the voice picker in Settings is filtered to voices that
+  match the selected language, so the spoken reply sounds natural.
+
 ## Project layout once a session has run
 
 ```
