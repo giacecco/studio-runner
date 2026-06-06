@@ -111,59 +111,64 @@ is only transmitted while the transport is running.
 
 ## Bitwig: suspend transport while speaking
 
-Two Bitwig controller scripts in `tools/bitwig-suspend/` pause the Bitwig
-transport when you press a button and resume it when you release (memo) or
-when StudioRunner finishes responding (ask — after transcription, AI reply,
-TTS, and any clip playback).
+A single Bitwig controller script in `tools/bitwig-suspend/` pauses the
+Bitwig transport when you press a button and resumes it when you release
+(memo) or when StudioRunner finishes responding (ask — after transcription,
+AI reply, TTS, and any clip playback).
+
+If the transport was already stopped when you pressed a button, it stays
+stopped — the script only resumes what it paused.
 
 ### How it works
 
-- **StudioRunner Transport** listens on the Grid. When a button is pressed
-  while the transport is playing it saves the playhead position and stops.
-  Memo resumes on release. Ask does not — it waits for the done signal.
-- **StudioRunner Resume** listens on a virtual MIDI source that StudioRunner
-  creates at startup (named "StudioRunner"). The moment the ask flow ends —
-  success, error, or silence — StudioRunner fires CC 119 ch 16 on that
-  source; Resume calls `transport.play()`.
+**StudioRunner Transport** listens on two MIDI inputs:
+
+- **Grid** (port 0) — press/release events. On press while transport is
+  playing: saves playhead position and stops. Memo resumes on release; ask
+  waits for a done signal.
+- **StudioRunner** (port 1) — a virtual MIDI source the app creates at
+  startup. The moment the ask flow ends — success, error, or silence —
+  StudioRunner fires CC 119 ch 16 on that source and the script resumes
+  transport one second later (giving you a beat before the music kicks back
+  in).
 
 ### Setup
 
-**1 — Symlink the scripts into Bitwig's controller folder**
+**1 — Symlink the script into Bitwig's controller folder**
 
 ```bash
 ln -s "$(pwd)/tools/bitwig-suspend/StudioRunnerTransport.control.js" \
-  ~/Documents/Bitwig\ Studio/Controller\ Scripts/
-ln -s "$(pwd)/tools/bitwig-suspend/StudioRunnerResume.control.js" \
   ~/Documents/Bitwig\ Studio/Controller\ Scripts/
 ```
 
 **2 — Launch StudioRunner first**
 
 The virtual MIDI ports (`StudioRunner` source and destination) only exist
-while the app is running. Bitwig must see them when it loads the scripts.
+while the app is running. Bitwig must see them when it loads the script.
 
-**3 — Add the two controllers in Bitwig**
+**3 — Add the controller in Bitwig**
 
-Dashboard → Settings → Controllers → Add Controller → search "StudioRunner":
+Dashboard → Settings → Controllers → Add Controller → search "StudioRunner
+Transport". Configure the three ports:
 
-| Controller | Input | Output |
-|---|---|---|
-| StudioRunner Transport | Intech Studio: Grid | StudioRunner |
-| StudioRunner Resume | StudioRunner | IAC Driver Bus 1 |
+| Port | Device |
+|---|---|
+| Input 1 | Intech Studio: Grid |
+| Input 2 | StudioRunner |
+| Output | IAC Driver Bus 1 |
 
-The IAC Driver Bus 1 output on StudioRunner Resume is a dummy — nothing is
-sent on it. It is only there because Bitwig requires an output port to enable
-a controller script.
+IAC Driver Bus 1 as output is a dummy — nothing is sent on it. It is only
+required because Bitwig needs an output port to enable a controller script.
 
 **4 — Reload order matters**
 
 If you restart Bitwig before StudioRunner is running, the StudioRunner
 ports won't be found. Fix: with StudioRunner already open, go to the
-Controllers page and disable then re-enable both scripts.
+Controllers page and disable then re-enable the script.
 
 ### Changing the MIDI buttons
 
-The scripts are hard-coded to CC 44 (memo) and CC 45 (ask) on the Intech
+The script is hard-coded to CC 44 (memo) and CC 45 (ask) on the Intech
 Studio: Grid. If you re-learn the bindings in StudioRunner, update those
 values in `StudioRunnerTransport.control.js` and reload the script in Bitwig.
 
