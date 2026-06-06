@@ -57,6 +57,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(makeItem("Open chat history", #selector(actionOpenChat)))
         menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw)))
         menu.addItem(makeItem("Prune consolidated entries", #selector(actionPrune)))
+        menu.addItem(makeItem("Clear session timeline", #selector(actionClearTimeline)))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Quit Studio Runner", #selector(actionQuit), key: "q"))
@@ -101,29 +102,32 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// Mug silhouette with a music note cut out of the body — like a printed
-    /// design on the mug. Uses destinationOut to knock the note out of the fill.
+    /// design on the mug. Passes the compositing operation directly to the draw
+    /// call so AppKit's internal graphics-state save/restore can't reset it.
     private func makeIdleIcon() -> NSImage {
         let size = NSSize(width: 20, height: 16)
-        let image = NSImage(size: size, flipped: false) { _ in
-            let mugConf = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-            if let mug = NSImage(systemSymbolName: "mug.fill",
-                                 accessibilityDescription: nil)?
-                .withSymbolConfiguration(mugConf) {
-                mug.draw(in: NSRect(x: 0, y: 0, width: 20, height: 16))
-            }
+        let image = NSImage(size: size)
+        image.lockFocus()
 
-            // Cut the note out of the mug body so it reads as a printed design.
-            let noteConf = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold)
-            if let note = NSImage(systemSymbolName: "music.note",
-                                  accessibilityDescription: nil)?
-                .withSymbolConfiguration(noteConf),
-               let ctx = NSGraphicsContext.current {
-                ctx.compositingOperation = .destinationOut
-                note.draw(in: NSRect(x: 3, y: 4, width: 7, height: 8))
-                ctx.compositingOperation = .sourceOver
-            }
-            return true
+        let mugConf = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        if let mug = NSImage(systemSymbolName: "mug.fill",
+                             accessibilityDescription: nil)?
+            .withSymbolConfiguration(mugConf) {
+            mug.draw(in: NSRect(x: 0, y: 0, width: 20, height: 16),
+                     from: .zero, operation: .sourceOver, fraction: 1.0)
         }
+
+        // Carve the note out of the mug body — destinationOut punches the note
+        // shape as transparent pixels into whatever is already in the context.
+        let noteConf = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        if let note = NSImage(systemSymbolName: "music.note",
+                              accessibilityDescription: nil)?
+            .withSymbolConfiguration(noteConf) {
+            note.draw(in: NSRect(x: 4, y: 2, width: 9, height: 10),
+                      from: .zero, operation: .destinationOut, fraction: 1.0)
+        }
+
+        image.unlockFocus()
         image.isTemplate = true
         return image
     }
@@ -141,7 +145,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 item.isHidden  = !coordinator.isRunning
             case #selector(actionRelearn):
                 item.isEnabled = MIDIBindingsStore.load() != nil || coordinator.isRunning
-            case #selector(actionOpenNotes):
+            case #selector(actionOpenNotes), #selector(actionClearTimeline):
                 item.isEnabled = FileManager.default.fileExists(atPath: Config.notesFile.path)
             case #selector(actionOpenChat):
                 item.isEnabled = FileManager.default.fileExists(atPath: Config.chatFile.path)
@@ -170,6 +174,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func actionOpenNotes() { coordinator.openNotes() }
     @objc private func actionOpenChat()  { coordinator.openChat() }
     @objc private func actionOpenRaw()   { coordinator.openRaw() }
-    @objc private func actionPrune()     { coordinator.runPrune() }
+    @objc private func actionPrune()         { coordinator.runPrune() }
+    @objc private func actionClearTimeline() { coordinator.clearTimeline() }
     @objc private func actionQuit() { NSApp.terminate(nil) }
 }
