@@ -29,7 +29,7 @@ glyph while you're holding a button.
   for DAW timeline position tags in memo entries. See
   [DAW timeline position (MTC)](#daw-timeline-position-mtc) below.
 - A MIDI controller with two buttons / pads / pedals.
-- An Anthropic-compatible API key (`STUDIORUNNER_AI_API_KEY`).
+- An Anthropic-compatible API key (entered in Settings, stored in the project file).
 
 ## Quick start
 
