@@ -5,6 +5,7 @@ import Foundation
 enum SessionState: Equatable {
     case notReady(reason: String)
     case idle
+    case learningSession
     case learningMemo
     case learningAsk
     case recordingMemo
@@ -21,7 +22,8 @@ enum SessionState: Equatable {
         switch self {
         case .notReady:          return "exclamationmark.triangle"
         case .idle:              return "waveform"
-        case .learningMemo,
+        case .learningSession,
+             .learningMemo,
              .learningAsk:       return "hand.raised"
         case .recordingMemo,
              .recordingAsk:      return "mic.fill"
@@ -38,6 +40,7 @@ enum SessionState: Equatable {
         switch self {
         case .notReady(let reason):  return "Not ready — \(reason)"
         case .idle:                  return "Idle"
+        case .learningSession:       return "Press the session button…"
         case .learningMemo:          return "Press the memo button…"
         case .learningAsk:           return "Press the ask button…"
         case .recordingMemo:         return "Recording memo"

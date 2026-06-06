@@ -3,24 +3,32 @@ import CoreAudio
 import Foundation
 import UniformTypeIdentifiers
 
-/// Top-level controller. Owns the long-lived components (MIDI client, audio
-/// recorders, flows, consolidator) and brokers the lifecycle in response to
-/// menu-bar actions: start, stop, re-learn buttons, choose project folder.
+/// Top-level controller. Owns the long-lived components and brokers
+/// the session lifecycle.
+///
+/// The MIDI client is permanent — it starts at bootstrap and stays
+/// connected until quit. A dedicated "session" button (learned alongside
+/// memo and ask) controls the audio components: pressing it starts the
+/// mic/DAW recorders and the memo/ask flows; releasing it stops them.
 @MainActor
 final class Coordinator {
     let state = SessionStateStore()
     let speaker = Speaker()
 
+    // MIDI — permanent, live for the app's lifetime after bootstrap
     private var midi: MIDIClient?
-    private var mic: MicRecorder?
-    private var daw: DAWRecorder?
     private var gate: MIDIGate?
     private var mtcReceiver: MTCReceiver?
+
+    // Session components — live only while the session button is held
+    private var mic: MicRecorder?
+    private var daw: DAWRecorder?
     private var memoFlow: MemoFlow?
     private var askFlow: AskFlow?
     private var consolidator: Consolidator?
+
     private var settingsWindow: SettingsWindowController?
-    private(set) var isRunning = false
+    private(set) var isSessionActive = false
 
     private let cursors = Cursors()
 
@@ -35,7 +43,6 @@ final class Coordinator {
     func bootstrap() {
         Config.loadProjectSettings()
 
-        // No .studiorunner file found — ask the user what to do before going further.
         let settingsURL = ProjectSettings.projectFileURL(root: Config.projectRoot)
         if !FileManager.default.fileExists(atPath: settingsURL.path) {
             promptFirstProject()
@@ -52,7 +59,8 @@ final class Coordinator {
             state.set(.notReady(reason: "API key missing — open Settings to add it"))
             return
         }
-        state.set(.idle)
+
+        startMidi()
     }
 
     private func promptFirstProject() {
@@ -108,11 +116,9 @@ final class Coordinator {
 
     // MARK: - Project folder
 
-    /// Called when the user double-clicks a `.studiorunner` file in Finder.
-    /// Derives the project root from the file's parent directory.
     func openProjectFile(_ url: URL) {
         let root = url.deletingLastPathComponent()
-        if isRunning { stopSession() }
+        if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(root)
         bootstrap()
     }
@@ -128,27 +134,19 @@ final class Coordinator {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let fileURL = ProjectSettings.projectFileURL(root: url)
         let isNew = !FileManager.default.fileExists(atPath: fileURL.path)
-        // Create the settings file immediately so bootstrap() doesn't re-prompt.
         if isNew { Config.settings.save(to: fileURL) }
         Config.setProjectRoot(url)
         bootstrap()
         if isNew { showSettings() }
     }
 
-    // MARK: - Session lifecycle
+    // MARK: - MIDI lifecycle (permanent)
 
-    func startSession() {
-        Task { await self._startSession() }
+    private func startMidi() {
+        Task { await _startMidi() }
     }
 
-    private func _startSession() async {
-        guard !isRunning else { return }
-        guard case .idle = state.state else {
-            log("start: not ready (\(state.state.label))")
-            return
-        }
-
-        // 1. MIDI
+    private func _startMidi() async {
         let client: MIDIClient
         do {
             client = try MIDIClient()
@@ -158,25 +156,68 @@ final class Coordinator {
             return
         }
         self.midi = client
-
-        // 2. MTC receiver — listens for DAW timeline position
         self.mtcReceiver = MTCReceiver(client: client, sourceName: Config.mtcSourceName)
 
-        // 3. Bindings — load or learn (MTC receiver is step 2 above)
         let pair: MIDIBindingsStore.Pair
         if let saved = MIDIBindingsStore.load() {
             pair = saved
         } else {
             guard let learned = await learnBindings(client: client) else {
-                client.shutdown(); self.midi = nil
                 state.set(.idle)
                 return
             }
             pair = learned
-            MIDIBindingsStore.save(memo: pair.memo, ask: pair.ask)
+            MIDIBindingsStore.save(session: pair.session!, memo: pair.memo, ask: pair.ask)
         }
 
-        // 4. Mic
+        setupGate(client: client, pair: pair)
+        state.set(.idle)
+        log("MIDI ready — session: \(pair.session!.human), memo: \(pair.memo.human), ask: \(pair.ask.human)")
+    }
+
+    private func setupGate(client: MIDIClient, pair: MIDIBindingsStore.Pair) {
+        guard let sessionBinding = pair.session else { return }
+        let cursors = self.cursors
+        let mtcRecv = self.mtcReceiver
+
+        let g = MIDIGate(client: client, session: sessionBinding, memo: pair.memo, ask: pair.ask)
+        g.onPressDown = { [stateStore = state, weak self] which in
+            let now = Date().timeIntervalSince1970 * 1000
+            switch which {
+            case .session:
+                Task { await self?._startSessionComponents() }
+            case .memo:
+                cursors.memoStart = now
+                cursors.memoDawPosition = mtcRecv?.position
+                stateStore.setFromAnyThread(.recordingMemo)
+            case .ask:
+                cursors.askStart = now
+                stateStore.setFromAnyThread(.recordingAsk)
+            }
+        }
+        g.onPressUp = { [weak self] which in
+            let now = Date().timeIntervalSince1970 * 1000
+            switch which {
+            case .session:
+                Task { @MainActor in self?.stopSessionComponents() }
+            case .memo:
+                let s = cursors.memoStart
+                let pos = cursors.memoDawPosition
+                Task { await self?.memoFlow?.handle(startMs: s, endMs: now, dawPosition: pos) }
+            case .ask:
+                let s = cursors.askStart
+                Task { await self?.askFlow?.handle(startMs: s, endMs: now) }
+            }
+        }
+        g.start()
+        self.gate = g
+    }
+
+    // MARK: - Session components
+
+    private func _startSessionComponents() async {
+        guard !isSessionActive else { return }
+
         let micDevID: AudioDeviceID?
         if Config.micDeviceName.isEmpty {
             micDevID = nil
@@ -193,12 +234,10 @@ final class Coordinator {
         } catch {
             log("mic start failed: \(error)")
             state.set(.error("Mic: \(error.localizedDescription)"))
-            client.shutdown(); self.midi = nil
             return
         }
         self.mic = micRec
 
-        // 5. DAW (optional — log and continue if missing)
         if !Config.dawDeviceName.isEmpty,
            let dawID = CoreAudioDevice.findInputDevice(named: Config.dawDeviceName) {
             do {
@@ -210,11 +249,9 @@ final class Coordinator {
                 self.daw = nil
             }
         } else {
-            log("DAW device '\(Config.dawDeviceName)' not found — continuing mic-only")
             self.daw = nil
         }
 
-        // 6. Flows
         let onStateBg: @Sendable (SessionState) -> Void = { [stateStore = state] s in
             stateStore.setFromAnyThread(s)
         }
@@ -223,89 +260,63 @@ final class Coordinator {
         }
         let consolidator = Consolidator(onState: onStateBg, onLog: onLogBg)
         let onConsolidate: @Sendable () -> Void = { Task { await consolidator.schedule() } }
-        let memoFlow = MemoFlow(
+        self.memoFlow = MemoFlow(
             mic: micRec.buffer,
             daw: self.daw?.buffer,
             onState: onStateBg,
             onConsolidate: onConsolidate,
             onLog: onLogBg
         )
-        let askFlow = AskFlow(
+        self.askFlow = AskFlow(
             mic: micRec.buffer,
             speaker: speaker,
             onState: onStateBg,
             onLog: onLogBg
         )
-        self.memoFlow = memoFlow
-        self.askFlow = askFlow
         self.consolidator = consolidator
 
-        // 7. Gate
-        let gate = MIDIGate(client: client, memo: pair.memo, ask: pair.ask)
-        let cursors = self.cursors
-        let mtcRecv = self.mtcReceiver   // captured once; read on midi.queue alongside MTC updates
-        gate.onPressDown = { [stateStore = state] which in
-            let now = Date().timeIntervalSince1970 * 1000
-            switch which {
-            case .memo:
-                cursors.memoStart = now
-                cursors.memoDawPosition = mtcRecv?.position
-                stateStore.setFromAnyThread(.recordingMemo)
-            case .ask:
-                cursors.askStart = now
-                stateStore.setFromAnyThread(.recordingAsk)
-            }
-        }
-        gate.onPressUp = { which in
-            let now = Date().timeIntervalSince1970 * 1000
-            switch which {
-            case .memo:
-                let s = cursors.memoStart
-                let pos = cursors.memoDawPosition
-                Task { await memoFlow.handle(startMs: s, endMs: now, dawPosition: pos) }
-            case .ask:
-                let s = cursors.askStart
-                Task { await askFlow.handle(startMs: s, endMs: now) }
-            }
-        }
-        gate.start()
-        self.gate = gate
-
-        isRunning = true
+        isSessionActive = true
         state.set(.idle)
-        log("session started — memo: \(pair.memo.human), ask: \(pair.ask.human)")
+        log("session started")
     }
 
-    func stopSession() {
-        gate?.stop(); gate = nil
-        mtcReceiver?.stop(); mtcReceiver = nil
+    private func stopSessionComponents() {
+        guard isSessionActive else { return }
         mic?.stop(); mic = nil
         daw?.stop(); daw = nil
         memoFlow = nil
         askFlow = nil
         consolidator = nil
-        midi?.shutdown(); midi = nil
-        isRunning = false
+        isSessionActive = false
         state.set(.idle)
         log("session stopped")
     }
 
+    // MARK: - Re-learn
+
     func relearnBindings() {
         Task {
-            if isRunning { stopSession() }
+            if isSessionActive { stopSessionComponents() }
+            gate?.stop(); gate = nil
             MIDIBindingsStore.clear()
-            await _startSession()
+            guard let client = midi else { return }
+            guard let learned = await learnBindings(client: client) else { return }
+            MIDIBindingsStore.save(session: learned.session!, memo: learned.memo, ask: learned.ask)
+            setupGate(client: client, pair: learned)
+            state.set(.idle)
         }
     }
 
     private func learnBindings(client: MIDIClient) async -> MIDIBindingsStore.Pair? {
         let device = Config.midiDeviceName
-        state.set(.learningMemo)
+        state.set(.learningSession)
         do {
-            let memo = try await captureBinding(client: client, excluding: nil, deviceName: device)
+            let session = try await captureBinding(client: client, excluding: [], deviceName: device)
+            state.set(.learningMemo)
+            let memo = try await captureBinding(client: client, excluding: [session], deviceName: device)
             state.set(.learningAsk)
-            let ask = try await captureBinding(client: client, excluding: memo, deviceName: device)
-            return MIDIBindingsStore.Pair(memo: memo, ask: ask)
+            let ask = try await captureBinding(client: client, excluding: [session, memo], deviceName: device)
+            return MIDIBindingsStore.Pair(session: session, memo: memo, ask: ask)
         } catch {
             state.set(.error("MIDI learn failed: \(error.localizedDescription)"))
             return nil
@@ -321,48 +332,42 @@ final class Coordinator {
         settingsWindow?.show()
     }
 
-    /// Called from the settings window after the API key is saved. Transitions
-    /// out of `.notReady` without requiring a restart if the key was the only
-    /// missing piece.
     func notifyApiKeySet() {
         if case .notReady = state.state { bootstrap() }
     }
 
-    /// Called from the settings window when the DAW device name changes. If a
-    /// session is currently running, bounce it so the DAW recorder rebinds.
-    /// Memo + ask flows hold a reference to the old DAW buffer, so a full
-    /// stop / start is the simplest way to swap them out cleanly.
     func applyDAWDeviceChange() {
-        bounceIfRunning()
+        if isSessionActive {
+            stopSessionComponents()
+            Task { await _startSessionComponents() }
+        }
     }
 
-    /// Same idea for the mic input device. MemoFlow and AskFlow both hold the
-    /// mic buffer, so a bounce is the simplest path to a clean swap.
     func applyMicDeviceChange() {
-        bounceIfRunning()
+        if isSessionActive {
+            stopSessionComponents()
+            Task { await _startSessionComponents() }
+        }
     }
 
-    /// Called when the user picks a different MIDI controller device in Settings.
-    /// Clears the saved bindings (they reference the old device's portName) and
-    /// bounces the session so the learn flow runs against the new device.
     func applyMidiDeviceChange() {
         MIDIBindingsStore.clear()
-        bounceIfRunning()
+        bounceMidi()
     }
 
-    /// Recreate the MTC receiver when the user picks a different source in Settings.
-    /// The old receiver unsubscribes on deinit; the new one subscribes immediately.
     func applyMtcSourceChange() {
         guard let client = midi else { return }
         mtcReceiver?.stop()
         mtcReceiver = MTCReceiver(client: client, sourceName: Config.mtcSourceName)
     }
 
-    private func bounceIfRunning() {
-        guard isRunning else { return }
+    private func bounceMidi() {
         Task {
-            stopSession()
-            await _startSession()
+            if isSessionActive { stopSessionComponents() }
+            gate?.stop(); gate = nil
+            mtcReceiver?.stop(); mtcReceiver = nil
+            midi?.shutdown(); midi = nil
+            await _startMidi()
         }
     }
 
@@ -430,7 +435,10 @@ final class Coordinator {
     }
 
     func shutdown() {
-        stopSession()
+        if isSessionActive { stopSessionComponents() }
+        gate?.stop(); gate = nil
+        mtcReceiver?.stop(); mtcReceiver = nil
+        midi?.shutdown(); midi = nil
     }
 
     // MARK: - Logging

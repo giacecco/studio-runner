@@ -172,7 +172,7 @@ final class MIDIClient {
 /// the menu bar state to ask the user to press a button.
 func captureBinding(
     client: MIDIClient,
-    excluding: MIDIBinding?,
+    excluding: [MIDIBinding],
     deviceName: String? = nil
 ) async throws -> MIDIBinding {
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MIDIBinding, Error>) in
@@ -196,7 +196,7 @@ func captureBinding(
                     candidate = nil
                 }
                 guard let c = candidate else { return }
-                if let excl = excluding, c == excl { return }
+                if excluding.contains(c) { return }
                 if let dev = deviceName, c.portName != dev { return }
                 box.captured = c
                 return
@@ -225,13 +225,21 @@ func captureBinding(
 
 // MARK: - Push-to-talk gate
 
-/// Routes live MIDI events to memo / ask press handlers while a session is
-/// running. Only emits a press once an active binding has had its full
-/// down-then-up cycle observed.
+/// Routes live MIDI events to session / memo / ask press handlers.
+///
+/// The session binding is treated independently: holding it gates memo and
+/// ask — those two are suppressed until the session button is down. This
+/// lets the user hold a dedicated "session active" button and press memo or
+/// ask freely without any mutual-exclusion constraint between them and the
+/// session button.
+///
+/// Memo and ask remain mutually exclusive with each other (only one active
+/// binding at a time via the `activeInner` slot).
 final class MIDIGate {
-    enum Which { case memo, ask }
+    enum Which { case session, memo, ask }
 
     private weak var client: MIDIClient?
+    private let sessionBinding: MIDIBinding
     private let memoBinding: MIDIBinding
     private let askBinding: MIDIBinding
 
@@ -239,10 +247,12 @@ final class MIDIGate {
     var onPressUp: ((Which) -> Void)?
 
     private var subscription: UUID?
-    private var activeBinding: Which?
+    private var sessionDown = false   // session button currently held
+    private var activeInner: Which?   // which of memo/ask is currently held
 
-    init(client: MIDIClient, memo: MIDIBinding, ask: MIDIBinding) {
+    init(client: MIDIClient, session: MIDIBinding, memo: MIDIBinding, ask: MIDIBinding) {
         self.client = client
+        self.sessionBinding = session
         self.memoBinding = memo
         self.askBinding = ask
     }
@@ -257,16 +267,32 @@ final class MIDIGate {
     func stop() {
         if let sub = subscription { client?.unsubscribe(sub) }
         subscription = nil
-        activeBinding = nil
+        sessionDown = false
+        activeInner = nil
     }
 
     private func handle(_ evt: MIDIEvent) {
-        if let which = match(evt, against: memoBinding) {
-            if which == .down { pressDown(.memo) } else { pressUp(.memo) }
+        // Session button — independent of memo/ask state.
+        if let edge = match(evt, against: sessionBinding) {
+            if edge == .down, !sessionDown {
+                sessionDown = true
+                onPressDown?(.session)
+            } else if edge == .up, sessionDown {
+                sessionDown = false
+                onPressUp?(.session)
+            }
             return
         }
-        if let which = match(evt, against: askBinding) {
-            if which == .down { pressDown(.ask) } else { pressUp(.ask) }
+
+        // Memo and ask — only active while session button is held.
+        guard sessionDown else { return }
+
+        if let edge = match(evt, against: memoBinding) {
+            if edge == .down { pressInner(.memo) } else { releaseInner(.memo) }
+            return
+        }
+        if let edge = match(evt, against: askBinding) {
+            if edge == .down { pressInner(.ask) } else { releaseInner(.ask) }
         }
     }
 
@@ -283,15 +309,15 @@ final class MIDIGate {
         }
     }
 
-    private func pressDown(_ which: Which) {
-        if activeBinding != nil { return }  // ignore simultaneous presses
-        activeBinding = which
+    private func pressInner(_ which: Which) {
+        if activeInner != nil { return }  // ignore simultaneous memo + ask
+        activeInner = which
         onPressDown?(which)
     }
 
-    private func pressUp(_ which: Which) {
-        guard activeBinding == which else { return }
-        activeBinding = nil
+    private func releaseInner(_ which: Which) {
+        guard activeInner == which else { return }
+        activeInner = nil
         onPressUp?(which)
     }
 }
@@ -356,16 +382,18 @@ final class MTCReceiver {
 
 enum MIDIBindingsStore {
     struct Pair: Codable {
+        let session: MIDIBinding?  // nil in data saved before the session-button feature
         let memo: MIDIBinding
         let ask: MIDIBinding
     }
 
     static func load() -> Pair? {
-        return Config.midiBindings
+        guard let pair = Config.midiBindings, pair.session != nil else { return nil }
+        return pair
     }
 
-    static func save(memo: MIDIBinding, ask: MIDIBinding) {
-        Config.setMidiBindings(Pair(memo: memo, ask: ask))
+    static func save(session: MIDIBinding, memo: MIDIBinding, ask: MIDIBinding) {
+        Config.setMidiBindings(Pair(session: session, memo: memo, ask: ask))
     }
 
     static func clear() {

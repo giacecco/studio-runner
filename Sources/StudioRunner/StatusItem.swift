@@ -9,9 +9,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let coordinator: Coordinator
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
-    private let statusRow  = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let startItem  = NSMenuItem()
-    private let stopItem   = NSMenuItem()
+    private let statusRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
@@ -37,14 +35,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(statusRow)
         menu.addItem(.separator())
 
-        startItem.title = "Start session"
-        startItem.action = #selector(actionStart)
-        startItem.target = self
-        stopItem.title = "Stop session"
-        stopItem.action = #selector(actionStop)
-        stopItem.target = self
-        menu.addItem(startItem)
-        menu.addItem(stopItem)
         menu.addItem(makeItem("Re-learn buttons…", #selector(actionRelearn)))
         menu.addItem(.separator())
 
@@ -84,7 +74,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func statusLabel(for state: SessionState) -> String {
         let detail: String
         if case .idle = state {
-            detail = coordinator.isRunning ? "Listening" : "Not running"
+            detail = coordinator.isSessionActive ? "Listening" : "Ready"
         } else {
             detail = state.label
         }
@@ -94,17 +84,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // MARK: - Icon construction
 
     private func makeIcon(for state: SessionState) -> NSImage {
-        if case .idle = state { return makeIdleIcon() }
+        if case .idle = state { return makeIdleIcon(sessionActive: coordinator.isSessionActive) }
         let img = NSImage(systemSymbolName: state.symbolName,
                           accessibilityDescription: state.label) ?? NSImage()
         img.isTemplate = true
         return img
     }
 
-    /// Mug silhouette with a music note cut out of the body — like a printed
-    /// design on the mug. Passes the compositing operation directly to the draw
-    /// call so AppKit's internal graphics-state save/restore can't reset it.
-    private func makeIdleIcon() -> NSImage {
+    /// Mug silhouette with a music note cut out of the body. When the session
+    /// is not active a diagonal slash is drawn across the icon.
+    private func makeIdleIcon(sessionActive: Bool) -> NSImage {
         let size = NSSize(width: 20, height: 16)
         let image = NSImage(size: size)
         image.lockFocus()
@@ -117,14 +106,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                      from: .zero, operation: .sourceOver, fraction: 1.0)
         }
 
-        // Carve the note out of the mug body — destinationOut punches the note
-        // shape as transparent pixels into whatever is already in the context.
-        let noteConf = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
-        if let note = NSImage(systemSymbolName: "music.note",
-                              accessibilityDescription: nil)?
-            .withSymbolConfiguration(noteConf) {
-            note.draw(in: NSRect(x: 4, y: 2, width: 9, height: 10),
-                      from: .zero, operation: .destinationOut, fraction: 1.0)
+        // Carve a symbol out of the mug body in negative — destinationOut punches
+        // transparent holes through whatever is already in the context.
+        if sessionActive {
+            // Music note: session is running, app is ready to record.
+            let noteConf = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+            if let note = NSImage(systemSymbolName: "music.note",
+                                  accessibilityDescription: nil)?
+                .withSymbolConfiguration(noteConf) {
+                note.draw(in: NSRect(x: 4, y: 2, width: 9, height: 10),
+                          from: .zero, operation: .destinationOut, fraction: 1.0)
+            }
+        } else {
+            // X mark: session not active (session button not held).
+            let xConf = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
+            if let xmark = NSImage(systemSymbolName: "xmark",
+                                   accessibilityDescription: nil)?
+                .withSymbolConfiguration(xConf) {
+                xmark.draw(in: NSRect(x: 4, y: 2, width: 10, height: 10),
+                           from: .zero, operation: .destinationOut, fraction: 1.0)
+            }
         }
 
         image.unlockFocus()
@@ -138,13 +139,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         for item in menu.items {
             guard let action = item.action else { continue }
             switch action {
-            case #selector(actionStart):
-                item.isHidden  = coordinator.isRunning
-                item.isEnabled = isReadyState()
-            case #selector(actionStop):
-                item.isHidden  = !coordinator.isRunning
-            case #selector(actionRelearn):
-                item.isEnabled = MIDIBindingsStore.load() != nil || coordinator.isRunning
             case #selector(actionOpenNotes), #selector(actionClearSession):
                 item.isEnabled = FileManager.default.fileExists(atPath: Config.notesFile.path)
             case #selector(actionOpenChat):
@@ -158,15 +152,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         statusRow.title = statusLabel(for: coordinator.state.state)
     }
 
-    private func isReadyState() -> Bool {
-        if case .notReady = coordinator.state.state { return false }
-        return true
-    }
-
     // MARK: - Actions
 
-    @objc private func actionStart() { coordinator.startSession() }
-    @objc private func actionStop()  { coordinator.stopSession() }
     @objc private func actionRelearn() { coordinator.relearnBindings() }
     @objc private func actionChooseFolder() { coordinator.chooseProjectFolder() }
     @objc private func actionReveal() { coordinator.revealProjectInFinder() }
