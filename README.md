@@ -76,6 +76,27 @@ settings.
     audio/YYMMDDHHMMSS.wav     ← DAW clips, CD quality
 ```
 
+## Ask flow — voice commands
+
+During an ask session the AI answers questions against the current session
+state, but it can also trigger actions. Speak naturally — exact phrasing
+does not matter.
+
+| What to say | What happens |
+|---|---|
+| "Play the recording from when I noticed the reverb" | Plays the DAW audio clip associated with that note after the AI finishes speaking |
+| "Show me the screenshot from bar 32" | Opens the screenshot from that note in Preview |
+| "Clear the session" / "Reset" / "Wipe the session" | Resets the session timeline, raw stream, chat history, and all audio/screenshots. Track notes, TODOs, and open questions are kept. Asks you to confirm in speech before executing. |
+
+Actions are extracted from the AI response as tagged directives
+(`[PLAY: …]`, `[SHOW: …]`, `[CLEAR_SESSION]`) and executed after TTS
+finishes — you hear the reply first, then the clip plays or the screenshot
+opens. File paths are never spoken aloud.
+
+If the AI cannot find a matching recording or screenshot (e.g. the note you
+described does not have one, or consolidation has not run yet) it will say
+so rather than guessing a path.
+
 ## DAW timeline position (MTC)
 
 When your DAW transmits MTC (MIDI Timecode), Studio Runner snaps the playhead
@@ -108,27 +129,6 @@ Open **Settings → MTC source** and pick **IAC Driver Bus 1**. Leave it on
 
 The DAW must be in playback (not paused) when you press the memo button — MTC
 is only transmitted while the transport is running.
-
-## Ask flow — voice commands
-
-During an ask session the AI answers questions against the current session
-state, but it can also trigger actions. Speak naturally — exact phrasing
-does not matter.
-
-| What to say | What happens |
-|---|---|
-| "Play the recording from when I noticed the reverb" | Plays the DAW audio clip associated with that note after the AI finishes speaking |
-| "Show me the screenshot from bar 32" | Opens the screenshot from that note in Preview |
-| "Clear the session" / "Reset" / "Wipe the session" | Resets the session timeline, raw stream, chat history, and all audio/screenshots. Track notes, TODOs, and open questions are kept. Asks you to confirm in speech before executing. |
-
-Actions are extracted from the AI response as tagged directives
-(`[PLAY: …]`, `[SHOW: …]`, `[CLEAR_SESSION]`) and executed after TTS
-finishes — you hear the reply first, then the clip plays or the screenshot
-opens. File paths are never spoken aloud.
-
-If the AI cannot find a matching recording or screenshot (e.g. the note you
-described does not have one, or consolidation has not run yet) it will say
-so rather than guessing a path.
 
 ## Bitwig: suspend transport while speaking
 
