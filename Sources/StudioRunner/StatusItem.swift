@@ -46,7 +46,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(makeItem("Open studiorunner.md", #selector(actionOpenNotes)))
         menu.addItem(makeItem("Open chat history", #selector(actionOpenChat)))
         menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw)))
-        menu.addItem(makeItem("Prune consolidated entries", #selector(actionPrune)))
         menu.addItem(makeItem("Clear session…", #selector(actionClearSession)))
         menu.addItem(.separator())
 
@@ -161,7 +160,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func actionOpenNotes() { coordinator.openNotes() }
     @objc private func actionOpenChat()  { coordinator.openChat() }
     @objc private func actionOpenRaw()   { coordinator.openRaw() }
-    @objc private func actionPrune()        { coordinator.runPrune() }
     @objc private func actionClearSession() { coordinator.clearSession() }
     @objc private func actionQuit() { NSApp.terminate(nil) }
 }

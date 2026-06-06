@@ -271,7 +271,10 @@ final class Coordinator {
             mic: micRec.buffer,
             speaker: speaker,
             onState: onStateBg,
-            onLog: onLogBg
+            onLog: onLogBg,
+            onClearSession: { [weak self] in
+                Task { @MainActor in self?.clearSessionHeadless() }
+            }
         )
         self.consolidator = consolidator
 
@@ -380,24 +383,22 @@ final class Coordinator {
         NSWorkspace.shared.open(Config.projectRoot)
     }
 
-    func runPrune() {
-        do {
-            let dropped = try RawStream.prune()
-            log("pruned \(dropped) consolidated entr\(dropped == 1 ? "y" : "ies") from raw.md")
-        } catch {
-            log("prune failed: \(error)")
-        }
+    func clearSessionHeadless() {
+        performClear(logSuffix: " (voice command)")
     }
 
     func clearSession() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Clear session?"
-        alert.informativeText = "Resets the session timeline, raw stream, and chat history. Track notes, TODOs, and open questions are kept. This cannot be undone."
+        alert.informativeText = "Resets the session timeline, raw stream, chat history, and all recorded audio and screenshots. Track notes, TODOs, and open questions are kept. This cannot be undone."
         alert.addButton(withTitle: "Clear Session")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performClear(logSuffix: "")
+    }
 
+    private func performClear(logSuffix: String) {
         do {
             try "<!-- consolidated_through: none -->\n\n".write(
                 to: Config.rawFile, atomically: true, encoding: .utf8)
@@ -410,6 +411,14 @@ final class Coordinator {
                 try "".write(to: Config.chatFile, atomically: true, encoding: .utf8)
             } catch {
                 log("clear session: clear chat.md failed — \(error)")
+            }
+        }
+
+        for dir in [Config.audioDir, Config.screenshotsDir] {
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil) else { continue }
+            for entry in entries {
+                try? FileManager.default.removeItem(at: entry)
             }
         }
 
@@ -428,7 +437,7 @@ final class Coordinator {
         }
         do {
             try lines.joined(separator: "\n").write(to: Config.notesFile, atomically: true, encoding: .utf8)
-            log("session cleared")
+            log("session cleared\(logSuffix)")
         } catch {
             log("clear session: write failed — \(error)")
         }

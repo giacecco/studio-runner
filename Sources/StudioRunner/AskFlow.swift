@@ -16,30 +16,35 @@ actor AskFlow {
     private let speaker: Speaker
     private let onState: (SessionState) -> Void
     private let onLog: (String) -> Void
+    private let onClearSession: (@Sendable () -> Void)?
 
     init(
         mic: RollingBuffer,
         speaker: Speaker,
         onState: @escaping (SessionState) -> Void,
-        onLog: @escaping (String) -> Void
+        onLog: @escaping (String) -> Void,
+        onClearSession: (@Sendable () -> Void)? = nil
     ) {
         self.micBuffer = mic
         self.speaker = speaker
         self.onState = onState
         self.onLog = onLog
+        self.onClearSession = onClearSession
     }
 
     private static let systemPrompt = """
     You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
     When the producer asks to hear a recording, include [PLAY: <relative-path>] in your response — for example [PLAY: audio/260606141523.wav]. The path comes verbatim from the audio: field in the raw notes or from the (audio/...) link in the session timeline. Never invent a path.
     When the producer asks to see a screenshot, include [SHOW: <relative-path>] in your response — for example [SHOW: screenshots/260606141523.png]. The path comes verbatim from the screenshot: field in the raw notes or from the (screenshot/...) link in the session timeline. Never invent a path.
-    All [PLAY:] and [SHOW:] tags are stripped before your response is spoken; the referenced files are opened after TTS finishes, in the order they appear.
+    All [PLAY:], [SHOW:], and [CLEAR_SESSION] tags are stripped before your response is spoken and executed after TTS finishes. Never mention the filename or path anywhere else in your response — only inside the tag itself.
+    When the producer asks to clear, reset, or wipe the session, include [CLEAR_SESSION] anywhere in your response. Confirm the action in your spoken reply (e.g. "Done, session cleared.") but do not repeat the tag text.
     """
 
     // Regex compiled once at class load time.
-    private static let playRe  = try! NSRegularExpression(pattern: #"\[PLAY:\s*([^\]]+)\]"#)
-    private static let showRe  = try! NSRegularExpression(pattern: #"\[SHOW:\s*([^\]]+)\]"#)
-    private static let allRe   = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]"#)
+    private static let playRe        = try! NSRegularExpression(pattern: #"\[PLAY:\s*([^\]]+)\]"#)
+    private static let showRe        = try! NSRegularExpression(pattern: #"\[SHOW:\s*([^\]]+)\]"#)
+    private static let clearRe       = try! NSRegularExpression(pattern: #"\[CLEAR_SESSION\]"#)
+    private static let allRe         = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]|\[CLEAR_SESSION\]"#)
 
     func handle(startMs: Double, endMs: Double) async {
         onState(.processingMemo)
@@ -106,6 +111,7 @@ actor AskFlow {
             switch action {
             case .audio(let url):      await playClip(at: url)
             case .screenshot(let url): await openInPreview(at: url)
+            case .clearSession:        onClearSession?()
             }
         }
 
@@ -117,6 +123,7 @@ actor AskFlow {
     private enum MediaAction {
         case audio(URL)
         case screenshot(URL)
+        case clearSession
     }
 
     private static func mediaActions(from text: String) -> [MediaAction] {
@@ -135,6 +142,9 @@ actor AskFlow {
             guard r.location != NSNotFound else { continue }
             let path = ns.substring(with: r).trimmingCharacters(in: .whitespaces)
             tagged.append((m.range.location, .screenshot(Config.projectRoot.appendingPathComponent(path))))
+        }
+        for m in clearRe.matches(in: text, range: full) {
+            tagged.append((m.range.location, .clearSession))
         }
         return tagged.sorted { $0.loc < $1.loc }.map(\.action)
     }

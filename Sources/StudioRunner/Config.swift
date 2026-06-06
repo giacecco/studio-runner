@@ -221,10 +221,6 @@ enum Config {
         saveSettings()
     }
 
-    // ── Maintenance ──────────────────────────────────────────────────────
-
-    static let pruneAssets = false
-
     // ── Base role baked into every AI system prompt ──────────────────────
 
     static var baseRole: String {

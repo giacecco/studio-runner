@@ -100,18 +100,6 @@ actor Consolidator {
             return
         }
 
-        if Config.pruneAssets {
-            for entry in unprocessed {
-                if let rel = entry.audioRel {
-                    let abs = Config.projectRoot.appendingPathComponent(rel)
-                    try? FileManager.default.removeItem(at: abs)
-                }
-                if let rel = entry.screenshotRel {
-                    let abs = Config.projectRoot.appendingPathComponent(rel)
-                    try? FileManager.default.removeItem(at: abs)
-                }
-            }
-        }
         onLog("consolidated \(unprocessed.count) entr\(unprocessed.count == 1 ? "y" : "ies")")
     }
 }
