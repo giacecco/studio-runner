@@ -3,6 +3,9 @@ import CoreAudio
 import Foundation
 import UniformTypeIdentifiers
 
+private let soundMemo = NSSound(named: "Tink")
+private let soundAsk  = NSSound(named: "Pop")
+
 /// Top-level controller. Owns the long-lived components and brokers
 /// the session lifecycle.
 ///
@@ -190,9 +193,11 @@ final class Coordinator {
                 cursors.memoStart = now
                 cursors.memoDawPosition = mtcRecv?.position
                 stateStore.setFromAnyThread(.recordingMemo)
+                DispatchQueue.main.async { soundMemo?.play() }
             case .ask:
                 cursors.askStart = now
                 stateStore.setFromAnyThread(.recordingAsk)
+                DispatchQueue.main.async { soundAsk?.play() }
             }
         }
         g.onPressUp = { [weak self] which in
