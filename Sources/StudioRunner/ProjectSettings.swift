@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Persistent, project-scoped configuration. Serialised as
@@ -35,6 +36,24 @@ struct ProjectSettings: Codable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(self) else { return }
         try? data.write(to: url, options: .atomic)
+        Self.markHasCustomIcon(at: url)
+    }
+
+    /// Set the FinderInfo `kHasCustomIcon` bit on the file. With this flag,
+    /// Finder skips QuickLook thumbnail generation and falls back to the
+    /// document type icon — that's how we get the mug instead of a text
+    /// preview of the JSON body in icon view. The comment header alone
+    /// doesn't suppress the text thumbnailer.
+    private static func markHasCustomIcon(at url: URL) {
+        // 32-byte FinderInfo: type(4) + creator(4) + flags(2) + location(4)
+        // + fldr(2) + FXInfo(16). kHasCustomIcon = 0x0400 sits in the flags
+        // word at offset 8 (big-endian).
+        var info = [UInt8](repeating: 0, count: 32)
+        info[8] = 0x04
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return }
+            _ = setxattr(path, "com.apple.FinderInfo", info, info.count, 0, 0)
+        }
     }
 
     // MARK: - Well-known paths

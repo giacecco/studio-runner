@@ -50,6 +50,9 @@ if [[ -f Resources/StudioRunnerDoc.icns ]]; then
     cp Resources/StudioRunnerDoc.icns "${OUT_DIR}/Contents/Resources/"
 fi
 
+# macOS attaches com.apple.provenance xattrs to freshly written files —
+# codesign refuses to sign anything that carries Finder-info detritus.
+xattr -cr "${OUT_DIR}"
 if [[ -n "${SIGN_IDENTITY}" ]]; then
     echo "==> codesign with '${SIGN_IDENTITY}'"
     codesign --force --deep --options runtime \

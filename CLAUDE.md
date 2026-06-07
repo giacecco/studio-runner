@@ -190,6 +190,17 @@ opened from Finder to switch projects.
   in System Settings the first time. The entitlements file declares
   `audio-input`, `network.client`, and `files.user-selected.read-write`
   to keep the hardened runtime happy after Developer ID signing.
+- **`.studiorunner` Finder icon**: every save sets the FinderInfo
+  `kHasCustomIcon` bit on the file (`ProjectSettings.markHasCustomIcon`
+  writes the 32-byte `com.apple.FinderInfo` xattr with bit 10 set).
+  Without it, Finder's text thumbnailer renders the JSON body as a
+  content-preview thumbnail that wins over `CFBundleDocumentTypes` →
+  `StudioRunnerDoc.icns` — regardless of `UTTypeConformsTo` declarations
+  or a shipping `QLThumbnailProvider` extension. The flag tells Finder
+  "skip thumbnailing, use the type icon" and Finder falls back to our
+  `.icns`. The file content is unmodified plain JSON. An app icon
+  (`CFBundleIconFile=StudioRunner`) is also declared so NSAlert dialogs
+  get the mug instead of the generic-app grid placeholder.
 
 ## Manual steps the user handles
 

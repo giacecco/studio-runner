@@ -5,7 +5,9 @@
 /// Usage (from repo root):
 ///   swift Scripts/make_doc_icns.swift
 ///
-/// Output: Resources/StudioRunnerDoc.icns
+/// Output:
+///   Resources/StudioRunner.icns      (app icon — used in NSAlert dialogs)
+///   Resources/StudioRunnerDoc.icns   (document icon — used by Finder for .studiorunner)
 import AppKit
 import Foundation
 
@@ -42,7 +44,10 @@ func render(pixels: Int) -> NSBitmapImageRep {
     let noteConf = NSImage.SymbolConfiguration(pointSize: f * 0.38, weight: .bold)
     if let note = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
             .withSymbolConfiguration(noteConf) {
-        note.draw(in: NSRect(x: f * 0.20, y: f * 0.08, width: f * 0.50, height: f * 0.62),
+        // y lifted from the original 0.08 so the note sits higher on the
+        // mug body. Visual centring inside the SF Symbol's bounding box
+        // pushes the apparent position lower than the rect suggests.
+        note.draw(in: NSRect(x: f * 0.20, y: f * 0.125, width: f * 0.50, height: f * 0.62),
                   from: .zero, operation: .destinationOut, fraction: 1)
     }
 
@@ -65,22 +70,33 @@ let entries: [(file: String, pixels: Int)] = [
 ]
 
 let repoRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let iconset  = repoRoot.appendingPathComponent("Resources/StudioRunnerDoc.iconset")
-let icns     = repoRoot.appendingPathComponent("Resources/StudioRunnerDoc.icns")
 
-try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+/// The artwork is identical for both icons — same mug, same carved note.
+/// We emit one .iconset, convert it to .icns once, then copy to the second
+/// path. Done this way (rather than rendering twice) so the bitmaps are
+/// byte-identical.
+let stagingSet = repoRoot.appendingPathComponent("Resources/StudioRunner.iconset")
+try? FileManager.default.removeItem(at: stagingSet)
+try! FileManager.default.createDirectory(at: stagingSet, withIntermediateDirectories: true)
 
 for (file, pixels) in entries {
     let png = render(pixels: pixels).representation(using: .png, properties: [:])!
-    try! png.write(to: iconset.appendingPathComponent(file))
+    try! png.write(to: stagingSet.appendingPathComponent(file))
     print("  \(file)  (\(pixels)px)")
 }
 
-let result = Process()
-result.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-result.arguments = ["-c", "icns", iconset.path, "-o", icns.path]
-try! result.run()
-result.waitUntilExit()
+let appIcns = repoRoot.appendingPathComponent("Resources/StudioRunner.icns")
+let docIcns = repoRoot.appendingPathComponent("Resources/StudioRunnerDoc.icns")
 
-try! FileManager.default.removeItem(at: iconset)
-print("==> \(icns.lastPathComponent)")
+let convert = Process()
+convert.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+convert.arguments = ["-c", "icns", stagingSet.path, "-o", appIcns.path]
+try! convert.run()
+convert.waitUntilExit()
+
+try? FileManager.default.removeItem(at: docIcns)
+try! FileManager.default.copyItem(at: appIcns, to: docIcns)
+
+try! FileManager.default.removeItem(at: stagingSet)
+print("==> \(appIcns.lastPathComponent)")
+print("==> \(docIcns.lastPathComponent)")
