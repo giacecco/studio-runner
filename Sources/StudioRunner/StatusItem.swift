@@ -38,14 +38,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(makeItem("Re-learn buttons…", #selector(actionRelearn)))
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Choose project folder…", #selector(actionChooseFolder)))
-        menu.addItem(makeItem("Reveal project in Finder", #selector(actionReveal)))
+        menu.addItem(makeItem("New project…", #selector(actionNewProject), key: "n"))
+        menu.addItem(makeItem("Open project…", #selector(actionOpenProject), key: "o"))
+        menu.addItem(makeItem("Reveal project in Finder", #selector(actionReveal), key: "R"))
         menu.addItem(makeItem("Settings…", #selector(actionSettings), key: ","))
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Open studiorunner.md", #selector(actionOpenNotes)))
-        menu.addItem(makeItem("Open chat history", #selector(actionOpenChat)))
-        menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw)))
+        menu.addItem(makeItem("Open studiorunner.md", #selector(actionOpenNotes), key: "1"))
+        menu.addItem(makeItem("Open chat history", #selector(actionOpenChat), key: "2"))
+        menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw), key: "3"))
         menu.addItem(makeItem("Clear session…", #selector(actionClearSession)))
         menu.addItem(.separator())
 
@@ -154,7 +155,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // MARK: - Actions
 
     @objc private func actionRelearn() { coordinator.relearnBindings() }
-    @objc private func actionChooseFolder() { coordinator.chooseProjectFolder() }
+    @objc private func actionOpenProject() { coordinator.promptOpenProject() }
+    @objc private func actionNewProject()  { coordinator.promptNewProject() }
     @objc private func actionReveal() { coordinator.revealProjectInFinder() }
     @objc private func actionSettings() { coordinator.showSettings() }
     @objc private func actionOpenNotes() { coordinator.openNotes() }

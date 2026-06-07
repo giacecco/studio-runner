@@ -80,7 +80,7 @@ final class Coordinator {
         }
     }
 
-    private func promptNewProject() {
+    func promptNewProject() {
         let panel = NSSavePanel()
         panel.title = "New Studio Runner Project"
         panel.message = "Choose a name and location for your project."
@@ -90,16 +90,19 @@ final class Coordinator {
         }
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else {
-            state.set(.notReady(reason: "no project — use the menu to open or create one"))
+            if !hasCurrentProject {
+                state.set(.notReady(reason: "no project — use the menu to open or create one"))
+            }
             return
         }
         Config.settings.save(to: url)
+        if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(url.deletingLastPathComponent())
         bootstrap()
         showSettings()
     }
 
-    private func promptOpenProject() {
+    func promptOpenProject() {
         let panel = NSOpenPanel()
         panel.title = "Open Studio Runner Project"
         panel.message = "Select a .studiorunner project file."
@@ -111,36 +114,26 @@ final class Coordinator {
         }
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else {
-            state.set(.notReady(reason: "no project — use the menu to open or create one"))
+            if !hasCurrentProject {
+                state.set(.notReady(reason: "no project — use the menu to open or create one"))
+            }
             return
         }
         openProjectFile(url)
     }
 
-    // MARK: - Project folder
+    private var hasCurrentProject: Bool {
+        let url = ProjectSettings.projectFileURL(root: Config.projectRoot)
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    // MARK: - Project switching
 
     func openProjectFile(_ url: URL) {
         let root = url.deletingLastPathComponent()
         if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(root)
         bootstrap()
-    }
-
-    func chooseProjectFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "Pick the project folder where studiorunner.md should live."
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let fileURL = ProjectSettings.projectFileURL(root: url)
-        let isNew = !FileManager.default.fileExists(atPath: fileURL.path)
-        if isNew { Config.settings.save(to: fileURL) }
-        Config.setProjectRoot(url)
-        bootstrap()
-        if isNew { showSettings() }
     }
 
     // MARK: - MIDI lifecycle (permanent)
