@@ -122,7 +122,7 @@ final class Coordinator {
         openProjectFile(url)
     }
 
-    private var hasCurrentProject: Bool {
+    var hasCurrentProject: Bool {
         let url = ProjectSettings.projectFileURL(root: Config.projectRoot)
         return FileManager.default.fileExists(atPath: url.path)
     }

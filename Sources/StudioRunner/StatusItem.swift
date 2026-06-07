@@ -136,15 +136,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // MARK: - NSMenuDelegate (refresh enable/disable on open)
 
     func menuWillOpen(_ menu: NSMenu) {
+        let hasProject = coordinator.hasCurrentProject
         for item in menu.items {
             guard let action = item.action else { continue }
             switch action {
+            case #selector(actionRelearn),
+                 #selector(actionReveal),
+                 #selector(actionSettings):
+                item.isEnabled = hasProject
             case #selector(actionOpenNotes), #selector(actionClearSession):
-                item.isEnabled = FileManager.default.fileExists(atPath: Config.notesFile.path)
+                item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.notesFile.path)
             case #selector(actionOpenChat):
-                item.isEnabled = FileManager.default.fileExists(atPath: Config.chatFile.path)
+                item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.chatFile.path)
             case #selector(actionOpenRaw):
-                item.isEnabled = FileManager.default.fileExists(atPath: Config.rawFile.path)
+                item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.rawFile.path)
             default:
                 break
             }
