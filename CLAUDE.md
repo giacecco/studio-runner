@@ -51,7 +51,7 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `StatusItem.swift` | `NSStatusItem` with state-driven SF Symbol icon and dynamic menu. |
 | `SettingsWindow.swift` | Modeless `NSWindow` with fields for API key, language, TTS voice, TTS volume, mic device, DAW device, MIDI controller, and MTC source. Writes through to the corresponding `Config.set*` functions, which persist to the `.studiorunner` project file. |
 | `SessionState.swift` | State enum (`idle`, `learningMemo`, `recordingMemo`, `processingMemo`, `recordingAsk`, `askThinking`, `askSpeaking`, `consolidating`, `notReady`, `error`). Drives the icon. |
-| `Config.swift` | Single source of truth for all tunables. User-facing settings live in `ProjectSettings` (serialised as `<name>.studiorunner` at the project root). The project root path itself is kept in `UserDefaults` so the app re-opens the right folder on relaunch. |
+| `Config.swift` | Single source of truth for all tunables. User-facing settings live in `ProjectSettings` (serialised as `<name>.studiorunner` at the project root). The app does not remember the last project across launches — it either prompts on launch or opens whatever `.studiorunner` file was double-clicked. |
 | `ProjectSettings.swift` | Codable struct persisted as a `.studiorunner` JSON file. Holds API key, language, TTS voice/volume, mic/DAW/MIDI device names, MTC source, AI endpoint/model, and learned MIDI bindings. A global fallback copy in `~/Library/Application Support/StudioRunner/settings.json` seeds brand-new projects. |
 | `Layout.swift` | Ensures the project-root directory layout (`studiorunner.md`, `.studiorunner.d/...`). |
 | `MIDI.swift` | CoreMIDI client, learn flow (single press + release cycle), push-to-talk gate, MTC quarter-frame assembler. Learned bindings are persisted inside the `.studiorunner` project file via `MIDIBindingsStore` → `Config.setMidiBindings`. |
@@ -89,9 +89,10 @@ All user-facing settings are stored in the `<name>.studiorunner` JSON file at
 the project root and edited through the Settings window (⌘,). There are no
 `.env` files or environment variable overrides.
 
-The only value stored outside the project file is the **project root path**
-itself, which lives in `UserDefaults` (`projectRoot` key) so the app
-re-opens the correct folder on relaunch.
+The app does not remember the last project across launches. On a plain
+launch it shows the "No project" prompt (New / Open). Double-clicking a
+`.studiorunner` file in Finder opens that project directly via
+`application(_:open:)`.
 
 Two constants in `Config.swift` can only be changed by editing the source:
 - `Config.micGainDb` (25 dB): gain applied to the mic ring after conversion.

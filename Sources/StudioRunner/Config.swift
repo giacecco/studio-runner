@@ -6,8 +6,9 @@ import Foundation
 /// (serialised as a `*.studiorunner` file at the project root). Everything else
 /// is a hardcoded constant. There is no longer any .env file support.
 ///
-/// The project root path itself is the only value kept in UserDefaults so the
-/// app re-opens the right folder on relaunch.
+/// The app does not remember the last project across launches: it either
+/// starts with no project (prompting the user) or opens whatever
+/// `.studiorunner` file was double-clicked.
 enum Config {
     // ── Project layout ───────────────────────────────────────────────────
 
@@ -25,14 +26,13 @@ enum Config {
     static var audioDir: URL { runnerDir.appendingPathComponent("audio") }
     static func setProjectRoot(_ url: URL) {
         projectRoot = url
-        UserDefaults.standard.set(url.path, forKey: "projectRoot")
         loadProjectSettings()
     }
 
     private static func resolveInitialProjectRoot() -> URL {
-        if let stored = UserDefaults.standard.string(forKey: "projectRoot"), !stored.isEmpty {
-            return URL(fileURLWithPath: stored)
-        }
+        // Earlier versions persisted the last project path here; we no longer
+        // do, so wipe any leftover value rather than let it sit indefinitely.
+        UserDefaults.standard.removeObject(forKey: "projectRoot")
         if let envRoot = ProcessInfo.processInfo.environment["STUDIO_PROJECT_ROOT"], !envRoot.isEmpty {
             return URL(fileURLWithPath: envRoot)
         }

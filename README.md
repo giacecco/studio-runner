@@ -51,9 +51,12 @@ The first launch will:
 2. Need Screen Recording granted manually the first time a memo
    triggers a screenshot — System Settings → Privacy & Security →
    Screen Recording, add StudioRunner.app, then quit and relaunch.
-3. Ask you to pick a project folder (menu → "Choose project folder…").
-   `studiorunner.md` will live at the root of that folder; the rest
-   goes under `.studiorunner.d/`.
+3. Show a "No project" dialog with **New project…** and **Open
+   existing…** — pick one. The `.studiorunner` file lives at the root
+   of the folder you choose, `studiorunner.md` next to it, and the rest
+   under `.studiorunner.d/`. After this, you can also launch a project
+   directly by double-clicking its `.studiorunner` file in Finder — the
+   app does not remember the last project across launches.
 4. Ask you to press each button in turn (memo first, then ask). The
    bindings persist across launches.
 
