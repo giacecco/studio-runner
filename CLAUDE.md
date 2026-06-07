@@ -75,7 +75,7 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | Dependency | Why |
 |---|---|
 | `whisper-cli` (Homebrew `whisper-cpp`) | Local speech-to-text. The bundle inherits the system PATH minus `/opt/homebrew/bin`, so `Config.whisperBinary` probes the usual Homebrew locations directly. |
-| `ggml-medium.en.bin` model | Whisper model, ~1.5 GB at `/opt/homebrew/share/whisper-cpp/models/` by default. |
+| `ggml-medium.en.bin` model | Whisper model, ~1.5 GB at `~/Library/Application Support/StudioRunner/models/`. Auto-downloaded from Hugging Face on first launch if missing; lives outside `/opt/homebrew/` so `brew cleanup` can't wipe it. The multilingual `ggml-medium.bin` is fetched on demand when the language is set to anything other than English. |
 | `screencapture` (macOS built-in) | Full-screen screenshots. |
 | BlackHole 2ch (or any virtual loopback) | Optional. If the named CoreAudio input device is missing, DAW capture is skipped and a warning is logged. |
 | DeepSeek API key | Consolidation + Q&A. Anthropic-compatible endpoint. Required. |

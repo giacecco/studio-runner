@@ -63,7 +63,58 @@ final class Coordinator {
             return
         }
 
+        if !FileManager.default.fileExists(atPath: Config.whisperModel) {
+            ensureWhisperModel()
+            return
+        }
+
         startMidi()
+    }
+
+    private func ensureWhisperModel() {
+        let name = Config.whisperModelFilename
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Download Whisper model?"
+        alert.informativeText = """
+The transcription model \(name) (~1.5 GB) is required but not yet on disk. \
+Studio Runner can download it now from Hugging Face — this typically takes a \
+few minutes on a fast connection. Progress is shown in the menu bar.
+"""
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            state.set(.notReady(reason: "whisper model not installed — restart to retry"))
+            return
+        }
+        startWhisperModelDownload()
+    }
+
+    /// Starts the model download in the background. Assumes the caller
+    /// has already obtained user consent (NSAlert in `ensureWhisperModel`
+    /// for bootstrap; pre-commit confirm in SettingsWindow for language
+    /// switches). Updates `.notReady` with progress and re-runs
+    /// `bootstrap` on success.
+    private func startWhisperModelDownload() {
+        let name = Config.whisperModelFilename
+        state.set(.notReady(reason: "downloading \(name)… 0%"))
+        Task { [stateStore = state] in
+            do {
+                var lastReported = -1
+                try await WhisperModelDownloader.shared.ensureCurrentModel { p in
+                    let pct = Int(p * 100)
+                    if pct != lastReported {
+                        lastReported = pct
+                        stateStore.setFromAnyThread(.notReady(reason: "downloading \(name)… \(pct)%"))
+                    }
+                }
+                await MainActor.run { self.bootstrap() }
+            } catch {
+                await MainActor.run {
+                    self.state.set(.error("model download failed — \(error.localizedDescription)"))
+                }
+            }
+        }
     }
 
     private func promptFirstProject() {
@@ -347,6 +398,31 @@ final class Coordinator {
         if isSessionActive {
             stopSessionComponents()
             Task { await _startSessionComponents() }
+        }
+    }
+
+    /// Triggered when the user changes the language in Settings. Each
+    /// language family uses a different whisper model — English maps to
+    /// `ggml-medium.en.bin`, everything else to the multilingual
+    /// `ggml-medium.bin`. If the model for the new language isn't on
+    /// disk yet, prompt + download before the next memo is recorded.
+    ///
+    /// If the model IS on disk, we still need to handle two stale-state
+    /// cases: (a) MIDI hasn't started because bootstrap was previously
+    /// halted by a cancel — resume bootstrap; (b) MIDI is running but
+    /// state is stuck on `.notReady` from a prior cancel — restore idle.
+    func applyLanguageChange() {
+        guard FileManager.default.fileExists(atPath: Config.whisperModel) else {
+            // SettingsWindow's `languageChanged` confirms the download
+            // before committing the new language, so getting here means
+            // the user already said yes — just start the transfer.
+            startWhisperModelDownload()
+            return
+        }
+        if midi == nil {
+            bootstrap()
+        } else if case .notReady = state.state {
+            state.set(.idle)
         }
     }
 

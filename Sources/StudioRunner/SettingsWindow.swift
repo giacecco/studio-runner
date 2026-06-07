@@ -399,6 +399,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func languageChanged() {
         let code = (languagePopup.selectedItem?.representedObject as? String) ?? "en"
+        let previousCode = Config.language
+        if code == previousCode { return }
+
+        // Pre-commit: if the new language's whisper model isn't on disk,
+        // confirm the ~1.5 GB download up front. If the user cancels,
+        // roll the popup back to the previous selection so the language
+        // setting never actually changes.
+        let prospective = Config.whisperModelPath(forLanguage: code)
+        if !FileManager.default.fileExists(atPath: prospective) {
+            let langName = Config.languages.first(where: { $0.code == code })?.name ?? code
+            let modelName = Config.whisperModelFilename(forLanguage: code)
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Download \(langName) Whisper model?"
+            alert.informativeText = """
+Switching to \(langName) needs the Whisper model \(modelName) (~1.5 GB), which \
+isn't yet on disk. Download it now? Cancelling leaves the session language as \
+it was.
+"""
+            alert.addButton(withTitle: "Download")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                if let item = languagePopup.itemArray.first(where: { ($0.representedObject as? String) == previousCode }) {
+                    languagePopup.select(item)
+                }
+                return
+            }
+        }
+
         Config.setLanguage(code)
         populateVoicePopup()
         // Restore the last-used voice for this language; fall back to first alphabetical.
@@ -416,6 +445,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         speaker.stop()
         Task { await self.speaker.speak(Self.voiceCheckPhrase) }
+        coordinator?.applyLanguageChange()
     }
 
     @objc private func micChanged() {

@@ -116,10 +116,27 @@ enum Config {
 
     // ── Whisper ──────────────────────────────────────────────────────────
 
-    static var whisperModel: String {
-        let base = "/opt/homebrew/share/whisper-cpp/models/"
+    /// Whisper models live in Application Support rather than under
+    /// `/opt/homebrew/share/whisper-cpp/`, which `brew cleanup` will happily
+    /// wipe out — Homebrew never shipped these binaries to begin with.
+    /// The app downloads them on first launch if missing.
+    static var whisperModelsDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("StudioRunner/models")
+    }
+    static func whisperModelFilename(forLanguage code: String) -> String {
         // The .en model only supports English; use the multilingual variant for others.
-        return language == "en" ? base + "ggml-medium.en.bin" : base + "ggml-medium.bin"
+        code == "en" ? "ggml-medium.en.bin" : "ggml-medium.bin"
+    }
+    static var whisperModelFilename: String {
+        whisperModelFilename(forLanguage: language)
+    }
+    static func whisperModelPath(forLanguage code: String) -> String {
+        whisperModelsDir.appendingPathComponent(whisperModelFilename(forLanguage: code)).path
+    }
+    static var whisperModel: String {
+        whisperModelsDir.appendingPathComponent(whisperModelFilename).path
     }
     static var whisperLanguage: String { language }
     static var whisperBinary: String {

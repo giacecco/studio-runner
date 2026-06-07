@@ -23,7 +23,10 @@ glyph while you're holding a button.
 
 - macOS 13 or later, Apple Silicon.
 - Xcode command-line tools (`swift`, `codesign`).
-- Homebrew packages: `whisper-cpp` (plus the `ggml-medium.en.bin` model).
+- Homebrew packages: `whisper-cpp`. The model file (`ggml-medium.en.bin`
+  for English, `ggml-medium.bin` for everything else, ~1.5 GB each) is
+  downloaded automatically by the app on first launch into
+  `~/Library/Application Support/StudioRunner/models/`.
 - **BlackHole 2ch** (or any virtual loopback) routed from your DAW —
   required for DAW audio clips in memo entries. Without it every memo
   captures a screenshot and transcription but no audio.
@@ -37,13 +40,14 @@ glyph while you're holding a button.
 
 ```bash
 brew install whisper-cpp
-# fetch the medium English model (~1.5 GB)
-bash /opt/homebrew/share/whisper-cpp/models/download-ggml-model.sh medium.en
 
 # Build and launch
 ./build.sh
 open .build/StudioRunner.app
 ```
+
+The app downloads the Whisper model itself on first launch — it asks for
+confirmation, then shows progress in the menu bar.
 
 The first launch will:
 
@@ -77,11 +81,9 @@ Spanish, Italian, Dutch, Portuguese, Japanese, Korean, Chinese).
 Changing the language does three things at once:
 
 - **Transcription** — Whisper is told which language to expect, improving
-  accuracy. Non-English sessions require the multilingual model
-  (`ggml-medium.bin`) instead of the English-only one:
-  ```bash
-  bash /opt/homebrew/share/whisper-cpp/models/download-ggml-model.sh medium
-  ```
+  accuracy. Non-English sessions use the multilingual model
+  (`ggml-medium.bin`) instead of the English-only one; the app prompts to
+  download it the first time you switch to a non-English language.
 - **AI replies** — the assistant is instructed to write everything
   (notes, consolidated state, Q&A) in the chosen language.
 - **TTS voice** — the voice picker in Settings is filtered to voices that
