@@ -47,11 +47,14 @@ actor Consolidator {
     Things the producer wondered aloud but hasn't decided. Remove an item once it's been answered or resolved.
 
     ## Session timeline
-    Condensed chronological summary, one bullet per meaningful utterance, oldest first. Format each bullet as:
-    - <position> — short paraphrase ([audio](<audio path>) · [screenshot](<screenshot path>), YY-MM-DD HH:MM)
-    where <position> is the entry's daw_pos value if present (e.g. "2:03"), otherwise HH:MM from the ## header.
-    The date in parentheses is always YY-MM-DD HH:MM taken from the ## header line.
-    Paths come verbatim from the entry's "audio:" and "screenshot:" fields. Omit asset links if neither is present.
+    Chronological summary, oldest first, with two levels of granularity:
+    - For days BEFORE the latest production day represented in the timeline: exactly ONE bullet per day, format:
+      `- YYYY-MM-DD — <prose summary of every meaningful utterance from that day, in a few sentences>`
+      When a new production day's utterances arrive, COLLAPSE any per-utterance bullets that were previously written for older days into this one-per-day form. Preserve the meaning; drop minute-level timestamps and DAW positions from the collapsed text.
+    - For the latest production day (the day of the most recent utterance): one bullet per meaningful utterance, format:
+      `- YYYY-MM-DD HH:MM[ at <daw_pos>] — <short paraphrase>`
+      Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely. Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
+    Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in raw.md for later lookup.
 
     Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.
     """
