@@ -9,7 +9,7 @@ enum Timestamps {
         return f.string(from: date)
     }
 
-    /// YYYY-MM-DD HH:MM:SS — header lines in raw entries and chat.md.
+    /// YYYY-MM-DD HH:MM:SS — header lines in memo entries and chat.md.
     static func human(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_GB_POSIX")

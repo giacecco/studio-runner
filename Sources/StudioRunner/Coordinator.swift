@@ -458,7 +458,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
     func openNotes() { NSWorkspace.shared.open(Config.notesFile) }
     func openChat()  { NSWorkspace.shared.open(Config.chatFile) }
-    func openRaw()   { NSWorkspace.shared.open(Config.rawFile) }
+    func openMemos() { NSWorkspace.shared.open(Config.memosFile) }
     func revealProjectInFinder() {
         NSWorkspace.shared.open(Config.projectRoot)
     }
@@ -471,7 +471,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Clear session?"
-        alert.informativeText = "Resets the session timeline, raw stream, chat history, and all recorded audio and screenshots. Track notes, TODOs, and open questions are kept. This cannot be undone."
+        alert.informativeText = "Resets the session timeline, memo stream, chat history, and all recorded audio and screenshots. Track notes, TODOs, and open questions are kept. This cannot be undone."
         alert.addButton(withTitle: "Clear Session")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -481,9 +481,9 @@ few minutes on a fast connection. Progress is shown in the menu bar.
     private func performClear(logSuffix: String) {
         do {
             try "<!-- consolidated_through: none -->\n\n".write(
-                to: Config.rawFile, atomically: true, encoding: .utf8)
+                to: Config.memosFile, atomically: true, encoding: .utf8)
         } catch {
-            log("clear session: reset raw.md failed — \(error)")
+            log("clear session: reset memos.md failed — \(error)")
         }
 
         if FileManager.default.fileExists(atPath: Config.chatFile.path) {

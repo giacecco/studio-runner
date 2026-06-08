@@ -6,7 +6,7 @@ import Foundation
 ///   1. Extract the mic clip from the rolling buffer
 ///   2. Transcribe it
 ///   3. Build a prompt with the current studiorunner.md plus the
-///      post-watermark tail of raw.md (so a freshly-spoken note can be cited
+///      post-watermark tail of memos.md (so a freshly-spoken note can be cited
 ///      even before consolidation has caught up)
 ///   4. Append the Q&A to chat.md
 ///   5. Speak the reply via AVSpeechSynthesizer
@@ -92,7 +92,7 @@ actor AskFlow {
 
         onState(.askThinking)
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
-        let recent = (try? RawStream.unprocessedFormatted()) ?? ""
+        let recent = (try? MemoStream.unprocessedFormatted()) ?? ""
         let user = """
         === Current track state ===
         \(state.isEmpty ? "(empty)" : state)

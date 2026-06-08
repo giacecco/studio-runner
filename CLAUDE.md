@@ -4,8 +4,8 @@ Native Swift macOS menu bar app for music-production sessions. Two MIDI
 push-to-talk buttons learnt at startup:
 
 - **Memo button**: hold + speak → entry appended to
-  `.studiorunner.d/raw.md` with a full-screen screenshot and a DAW audio
-  clip; DeepSeek consolidates the raw stream into `studiorunner.md`.
+  `.studiorunner.d/memos.md` with a full-screen screenshot and a DAW audio
+  clip; DeepSeek consolidates the memo stream into `studiorunner.md`.
 - **Ask button**: hold + speak → DeepSeek answers from the current
   state, the reply is appended to `.studiorunner.d/chat.md`, and spoken
   via `AVSpeechSynthesizer`.
@@ -64,9 +64,9 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `Screenshot.swift` | `Process` invocation of `screencapture -x`. |
 | `DeepSeek.swift` | URLSession POST to DeepSeek's Anthropic-compatible Messages endpoint; assembles the three-layer system prompt. |
 | `Speak.swift` | AVSpeechSynthesizer wrapper for the spoken reply. |
-| `RawStream.swift` | Append / parse / watermark / prune of `.studiorunner.d/raw.md`. |
+| `MemoStream.swift` | Append / parse / watermark / prune of `.studiorunner.d/memos.md`. |
 | `MemoFlow.swift` | Per-press memo pipeline: extract mic → transcribe → screenshot → DAW clip + transcript → append raw entry → schedule consolidation. |
-| `AskFlow.swift` | Per-press ask pipeline: extract mic → transcribe → DeepSeek call with state + raw tail → append chat → speak. |
+| `AskFlow.swift` | Per-press ask pipeline: extract mic → transcribe → DeepSeek call with state + memo tail → append chat → speak. |
 | `Consolidator.swift` | Serial, debounced actor that rewrites `studiorunner.md` from the post-watermark slice and advances the watermark. |
 | `Timestamps.swift` | YYMMDDHHMMSS and YY-MM-DD HH:MM:SS formatters. |
 
@@ -114,7 +114,7 @@ opened from Finder to switch projects.
   studiorunner.md              ← consolidated state — read this
   .studiorunner.d/
     system.md                  ← per-project context, prepended to every AI system prompt
-    raw.md                     ← append-only raw stream, with watermark
+    memos.md                   ← append-only memo stream, with watermark
     chat.md                    ← Q&A transcript
     screenshots/
       YYMMDDHHMMSS.png         ← screenshot per memo utterance
@@ -154,7 +154,7 @@ opened from Finder to switch projects.
   insight as the bun script: don't trust spawn-time timestamps — derive
   the wall-clock time of the oldest byte from `now − bytesInRing /
   bytesPerSecond`. This self-corrects for tap-thread jitter.
-- **Memo flow writes raw.md *first*, then DeepSeek.** A crash or
+- **Memo flow writes memos.md *first*, then DeepSeek.** A crash or
   network failure during consolidation can never lose a note.
 - **Three-layer system prompt** assembled inside `DeepSeek.call(...)`:
   1. `Config.baseRole` — hardcoded persona, always present.
@@ -163,7 +163,7 @@ opened from Finder to switch projects.
      flow's "use the context, say so if it's missing" guidance.
   Joined with `\n\n---\n\n`. `studiorunner.md` is NOT in the system
   prompt — it lives in the user message because it's dynamic state.
-- **Speaker label in raw entries.** Each utterance is logged as `The
+- **Speaker label in memo entries.** Each utterance is logged as `The
   Producer: <text>`. The label is a vestige of an earlier flow where a
   parallel `DAW: <text>` line carried whisper's transcription of the DAW
   clip; that pass was removed because hallucinations on near-silent

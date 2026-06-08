@@ -97,7 +97,7 @@ Changing the language does three things at once:
   studiorunner.md              ← read this; consolidated state
   .studiorunner.d/
     system.md                  ← edit this; per-project context for the AI
-    raw.md                     ← append-only stream with watermark
+    memos.md                   ← append-only memo stream with watermark
     chat.md                    ← Q&A transcript
     screenshots/YYMMDDHHMMSS.png
     audio/YYMMDDHHMMSS.wav     ← DAW clips, CD quality
@@ -119,7 +119,7 @@ does not matter.
 | "Play the recording from when I noticed the reverb" | Plays the DAW audio clip associated with that note after the AI finishes speaking |
 | "Show me the screenshot from bar 32" | Opens the screenshot from that note in Preview |
 | "Take me to where I mentioned Vocalign" / "Go to the last note about the kick" | Stops the DAW transport (if running) and moves the playhead to the `daw_pos` timestamp recorded with that note. Requires MTC to have been active when the memo was taken. |
-| "Clear the session" / "Reset" / "Wipe the session" | Resets the session timeline, raw stream, chat history, and all audio/screenshots. Track notes, TODOs, and open questions are kept. Asks you to confirm in speech before executing. |
+| "Clear the session" / "Reset" / "Wipe the session" | Resets the session timeline, memo stream, chat history, and all audio/screenshots. Track notes, TODOs, and open questions are kept. Asks you to confirm in speech before executing. |
 
 Actions are extracted from the AI response as tagged directives
 (`[PLAY: …]`, `[SHOW: …]`, `[GOTO: M:SS]`, `[CLEAR_SESSION]`) and

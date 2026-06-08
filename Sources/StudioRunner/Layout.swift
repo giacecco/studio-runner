@@ -5,7 +5,7 @@ import Foundation
 ///     <projectRoot>/studiorunner.md            ← consolidated state
 ///     <projectRoot>/.studiorunner.d/
 ///       system.md                              ← per-project context for the AI
-///       raw.md                                 ← append-only raw stream (with watermark)
+///       memos.md                               ← append-only memo stream (with watermark)
 ///       chat.md                                ← Q&A transcript (created on first ask)
 ///       screenshots/<ts>.png                   ← screenshot per memo
 ///       audio/<ts>.wav                         ← DAW clip per memo
@@ -20,8 +20,8 @@ enum Layout {
             let scaffold = "# Studio Runner\n\n## TODO\n\n## Track notes\n\n## Open questions\n\n## Session timeline\n"
             try scaffold.write(to: Config.notesFile, atomically: true, encoding: .utf8)
         }
-        if !fm.fileExists(atPath: Config.rawFile.path) {
-            try "<!-- consolidated_through: none -->\n\n".write(to: Config.rawFile, atomically: true, encoding: .utf8)
+        if !fm.fileExists(atPath: Config.memosFile.path) {
+            try "<!-- consolidated_through: none -->\n\n".write(to: Config.memosFile, atomically: true, encoding: .utf8)
         }
         if !fm.fileExists(atPath: Config.systemFile.path) {
             let stub = """

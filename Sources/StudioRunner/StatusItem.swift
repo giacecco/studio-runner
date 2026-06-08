@@ -46,7 +46,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(makeItem("Open studiorunner.md", #selector(actionOpenNotes), key: "1"))
         menu.addItem(makeItem("Open chat history", #selector(actionOpenChat), key: "2"))
-        menu.addItem(makeItem("Open raw stream", #selector(actionOpenRaw), key: "3"))
+        menu.addItem(makeItem("Open memo stream", #selector(actionOpenMemos), key: "3"))
         menu.addItem(makeItem("Clear session…", #selector(actionClearSession)))
         menu.addItem(.separator())
 
@@ -148,8 +148,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.notesFile.path)
             case #selector(actionOpenChat):
                 item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.chatFile.path)
-            case #selector(actionOpenRaw):
-                item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.rawFile.path)
+            case #selector(actionOpenMemos):
+                item.isEnabled = hasProject && FileManager.default.fileExists(atPath: Config.memosFile.path)
             default:
                 break
             }
@@ -166,7 +166,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func actionSettings() { coordinator.showSettings() }
     @objc private func actionOpenNotes() { coordinator.openNotes() }
     @objc private func actionOpenChat()  { coordinator.openChat() }
-    @objc private func actionOpenRaw()   { coordinator.openRaw() }
+    @objc private func actionOpenMemos() { coordinator.openMemos() }
     @objc private func actionClearSession() { coordinator.clearSession() }
     @objc private func actionQuit() { NSApp.terminate(nil) }
 }

@@ -5,10 +5,10 @@ import Foundation
 ///   2. Transcribe it via whisper-cli
 ///   3. Take a full-screen screenshot
 ///   4. Extract the DAW clip (if BlackHole was found) and save it for later playback
-///   5. Append a raw.md entry
+///   5. Append a memos.md entry
 ///   6. Signal the consolidator
 ///
-/// Writes raw.md *before* AI consolidation runs, so a network failure or
+/// Writes memos.md *before* AI consolidation runs, so a network failure or
 /// crash during consolidation can never lose a note.
 actor MemoFlow {
     private let micBuffer: RollingBuffer
@@ -94,7 +94,7 @@ actor MemoFlow {
         // belongs to the next entry). Skip writing a clip when the buffer is
         // essentially silent: BlackHole forwards literal zeros when the DAW
         // transport is stopped, so a "clip" would just be silence pointed at
-        // from raw.md, useless for later playback.
+        // from memos.md, useless for later playback.
         var hasDaw = false
         if let dawBuffer = dawBuffer {
             let dawStart = startMs - Config.dawPrerollSec * 1000
@@ -119,7 +119,7 @@ actor MemoFlow {
         }
 
         do {
-            try RawStream.append(.init(
+            try MemoStream.append(.init(
                 timestamp: ts,
                 micText: text,
                 dawPosition: dawPosition,
@@ -127,7 +127,7 @@ actor MemoFlow {
                 screenshotRel: screenshotRel
             ))
         } catch {
-            onLog("memo: raw.md append failed — \(error)")
+            onLog("memo: memos.md append failed — \(error)")
             return
         }
 

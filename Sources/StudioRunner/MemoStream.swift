@@ -1,6 +1,6 @@
 import Foundation
 
-/// Append-only stream of utterances at `.studiorunner.d/raw.md`. Each entry
+/// Append-only stream of utterances at `.studiorunner.d/memos.md`. Each entry
 /// is a markdown block delimited by `---`, headed by a `## YYYY-MM-DD HH:MM:SS`
 /// line and metadata fields the consolidator reads back.
 ///
@@ -10,7 +10,7 @@ import Foundation
 ///
 /// The consolidator advances the watermark after writing studiorunner.md;
 /// `prune` removes entries whose heading timestamp is `<=` the watermark.
-struct RawEntry {
+struct MemoEntry {
     let human: String       // YYYY-MM-DD HH:MM:SS
     let body: String        // full block including `##` and metadata fields
     let dawPosition: String? // DAW timeline position e.g. "2:03", nil if MTC unavailable
@@ -18,24 +18,24 @@ struct RawEntry {
     let screenshotRel: String?
 }
 
-struct RawStreamSnapshot {
+struct MemoStreamSnapshot {
     let watermark: String   // "none" before any consolidation
-    let entries: [RawEntry]
+    let entries: [MemoEntry]
 
-    var unprocessed: [RawEntry] {
+    var unprocessed: [MemoEntry] {
         watermark == "none" ? entries : entries.filter { $0.human > watermark }
     }
 }
 
-enum RawStream {
+enum MemoStream {
     // MARK: - Read
 
-    static func read() throws -> RawStreamSnapshot {
-        let content = (try? String(contentsOf: Config.rawFile, encoding: .utf8)) ?? ""
+    static func read() throws -> MemoStreamSnapshot {
+        let content = (try? String(contentsOf: Config.memosFile, encoding: .utf8)) ?? ""
         return parse(content)
     }
 
-    static func parse(_ content: String) -> RawStreamSnapshot {
+    static func parse(_ content: String) -> MemoStreamSnapshot {
         let lines = content.components(separatedBy: "\n")
         var watermark = "none"
         var start = 0
@@ -49,7 +49,7 @@ enum RawStream {
             start = 1
         }
 
-        var entries: [RawEntry] = []
+        var entries: [MemoEntry] = []
         var buf: [String] = []
         for i in start..<lines.count {
             let ln = lines[i]
@@ -65,10 +65,10 @@ enum RawStream {
                 buf.append(ln)
             }
         }
-        return RawStreamSnapshot(watermark: watermark, entries: entries)
+        return MemoStreamSnapshot(watermark: watermark, entries: entries)
     }
 
-    private static func parseEntry(block: String) -> RawEntry? {
+    private static func parseEntry(block: String) -> MemoEntry? {
         var human: String?
         var dawPosition: String?
         var audio: String?
@@ -88,8 +88,8 @@ enum RawStream {
             }
         }
         guard let human = human else { return nil }
-        return RawEntry(human: human, body: block,
-                        dawPosition: dawPosition, audioRel: audio, screenshotRel: screenshot)
+        return MemoEntry(human: human, body: block,
+                         dawPosition: dawPosition, audioRel: audio, screenshotRel: screenshot)
     }
 
     // MARK: - Append
@@ -113,16 +113,16 @@ enum RawStream {
         lines.append("---")
         lines.append("")
         let appendage = lines.joined(separator: "\n")
-        if let handle = try? FileHandle(forWritingTo: Config.rawFile) {
+        if let handle = try? FileHandle(forWritingTo: Config.memosFile) {
             try handle.seekToEnd()
             if let data = appendage.data(using: .utf8) { try handle.write(contentsOf: data) }
             try handle.close()
         } else {
-            try appendage.write(to: Config.rawFile, atomically: true, encoding: .utf8)
+            try appendage.write(to: Config.memosFile, atomically: true, encoding: .utf8)
         }
     }
 
-    /// Returns the post-watermark slice of raw.md, formatted for the ask flow's
+    /// Returns the post-watermark slice of memos.md, formatted for the ask flow's
     /// prompt context. Empty string if no unconsolidated entries.
     static func unprocessedFormatted() throws -> String {
         let snap = try read()
@@ -134,7 +134,7 @@ enum RawStream {
     // MARK: - Watermark
 
     static func advanceWatermark(to newWatermark: String) throws {
-        let content = (try? String(contentsOf: Config.rawFile, encoding: .utf8)) ?? ""
+        let content = (try? String(contentsOf: Config.memosFile, encoding: .utf8)) ?? ""
         var lines = content.components(separatedBy: "\n")
         let header = "<!-- consolidated_through: \(newWatermark) -->"
         if let first = lines.first, first.hasPrefix("<!-- consolidated_through:") {
@@ -143,7 +143,7 @@ enum RawStream {
             lines.insert("", at: 0)
             lines.insert(header, at: 0)
         }
-        try lines.joined(separator: "\n").write(to: Config.rawFile, atomically: true, encoding: .utf8)
+        try lines.joined(separator: "\n").write(to: Config.memosFile, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Prune
@@ -151,7 +151,7 @@ enum RawStream {
     /// Drop entries whose heading timestamp is at or before the current watermark.
     @discardableResult
     static func prune() throws -> Int {
-        let content = (try? String(contentsOf: Config.rawFile, encoding: .utf8)) ?? ""
+        let content = (try? String(contentsOf: Config.memosFile, encoding: .utf8)) ?? ""
         let snap = parse(content)
         if snap.watermark == "none" { return 0 }
         let kept = snap.entries.filter { $0.human > snap.watermark }
@@ -159,7 +159,7 @@ enum RawStream {
         let header = "<!-- consolidated_through: \(snap.watermark) -->"
         let body = kept.map { "\($0.body)\n---" }.joined(separator: "\n\n")
         let out = body.isEmpty ? "\(header)\n\n" : "\(header)\n\n\(body)\n"
-        try out.write(to: Config.rawFile, atomically: true, encoding: .utf8)
+        try out.write(to: Config.memosFile, atomically: true, encoding: .utf8)
         return dropped
     }
 

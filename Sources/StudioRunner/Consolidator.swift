@@ -1,7 +1,7 @@
 import Foundation
 
 /// Serial, debounced worker that rewrites studiorunner.md from the
-/// post-watermark slice of raw.md. Multiple memo presses while a
+/// post-watermark slice of memos.md. Multiple memo presses while a
 /// consolidation is in flight collapse to at most one extra pass.
 actor Consolidator {
     private var pending = false
@@ -54,15 +54,15 @@ actor Consolidator {
     - For the latest production day (the day of the most recent utterance): one bullet per meaningful utterance, format:
       `- YYYY-MM-DD HH:MM[ at <daw_pos>] — <short paraphrase>`
       Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely. Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
-    Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in raw.md for later lookup.
+    Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in memos.md for later lookup.
 
     Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.
     """
 
     private func runOne() async {
-        let snap: RawStreamSnapshot
+        let snap: MemoStreamSnapshot
         do {
-            snap = try RawStream.read()
+            snap = try MemoStream.read()
         } catch {
             onLog("consolidate: read failed — \(error)")
             return
@@ -74,13 +74,13 @@ actor Consolidator {
         defer { onState(.idle) }
 
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
-        let raw = unprocessed.map { "\($0.body)\n---" }.joined(separator: "\n\n")
+        let memos = unprocessed.map { "\($0.body)\n---" }.joined(separator: "\n\n")
         let user = """
         === Current state ===
         \(state.isEmpty ? "(empty — first consolidation)" : state)
 
-        === New raw utterances ===
-        \(raw)
+        === New memo entries ===
+        \(memos)
 
         Output the updated document.
         """
@@ -97,7 +97,7 @@ actor Consolidator {
         do {
             try toWrite.write(to: Config.notesFile, atomically: true, encoding: .utf8)
             let newWatermark = unprocessed.last!.human
-            try RawStream.advanceWatermark(to: newWatermark)
+            try MemoStream.advanceWatermark(to: newWatermark)
         } catch {
             onLog("consolidate: write failed — \(error)")
             return

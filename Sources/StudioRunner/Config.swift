@@ -19,7 +19,7 @@ enum Config {
 
     static var runnerDir: URL { projectRoot.appendingPathComponent(runnerDirName) }
     static var notesFile: URL { projectRoot.appendingPathComponent(notesFilename) }
-    static var rawFile: URL { runnerDir.appendingPathComponent("raw.md") }
+    static var memosFile: URL { runnerDir.appendingPathComponent("memos.md") }
     static var chatFile: URL { runnerDir.appendingPathComponent("chat.md") }
     static var systemFile: URL { runnerDir.appendingPathComponent(systemFilename) }
     static var screenshotsDir: URL { runnerDir.appendingPathComponent("screenshots") }
@@ -243,7 +243,7 @@ enum Config {
     static var baseRole: String {
         let langName = languages.first { $0.code == language }?.name ?? "English"
         return """
-You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (\(notesFilename)) up to date from the raw stream, and you answer the Producer's spoken questions about the session.
+You are a studio runner in a recording studio, helping The Producer through a music-production session. The Producer logs voice notes via push-to-talk while they work; you keep a curated track-state markdown (\(notesFilename)) up to date from the producer's memo stream, and you answer the Producer's spoken questions about the session.
 
 Be brief and practical. Short sentences. No preamble. When you mention a past note, cite its DAW position (e.g. "2:03") if known, otherwise its wall-clock time. The Producer is listening through speakers in a live mix context — they can't read long answers and don't want them.
 
