@@ -187,7 +187,7 @@ actor AskFlow {
     // MARK: - Chat log
 
     private func appendChat(question: String, answer: String) {
-        let block = "\n## \(Timestamps.human())\n**Q:** \(question)\n\n**A:** \(answer)\n\n---\n"
+        let block = "\n## \(Timestamps.human())\nThe Producer: \(question)\n\nStudio Runner: \(answer)\n\n---\n"
         let url = Config.chatFile
         if let handle = try? FileHandle(forWritingTo: url) {
             _ = try? handle.seekToEnd()
