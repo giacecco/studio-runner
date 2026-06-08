@@ -164,9 +164,12 @@ opened from Finder to switch projects.
   Joined with `\n\n---\n\n`. `studiorunner.md` is NOT in the system
   prompt — it lives in the user message because it's dynamic state.
 - **Speaker label in raw entries.** Each utterance is logged as `The
-  Producer: <text>` (and `DAW: <text>` if a DAW transcript exists). The
-  label distinguishes mic from DAW transcript when DeepSeek reads the
-  raw stream; no actual speaker-identification happens.
+  Producer: <text>`. The label is a vestige of an earlier flow where a
+  parallel `DAW: <text>` line carried whisper's transcription of the DAW
+  clip; that pass was removed because hallucinations on near-silent
+  loopback audio outweighed the value of the transcript. The DAW clip
+  itself is still captured and linked from the entry's `audio:` field
+  for on-demand playback.
 - **DeepSeek via the Anthropic-compatible endpoint**
   (`/anthropic/v1/messages`, `x-api-key`, `anthropic-version:
   2023-06-01`). OpenAI-style mode is not used — kept consistent with

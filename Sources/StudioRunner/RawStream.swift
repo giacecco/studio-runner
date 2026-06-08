@@ -100,7 +100,6 @@ enum RawStream {
         let dawPosition: String?     // DAW timeline position e.g. "2:03", nil if MTC unavailable
         let audioRel: String?
         let screenshotRel: String?
-        let dawText: String?
     }
 
     static func append(_ entry: NewEntry) throws {
@@ -111,7 +110,6 @@ enum RawStream {
         if let a = entry.audioRel { lines.append("audio: \(a)") }
         if let s = entry.screenshotRel { lines.append("screenshot: \(s)") }
         lines.append("The Producer: \(entry.micText)")
-        if let daw = entry.dawText, !daw.isEmpty { lines.append("DAW: \(daw)") }
         lines.append("---")
         lines.append("")
         let appendage = lines.joined(separator: "\n")
