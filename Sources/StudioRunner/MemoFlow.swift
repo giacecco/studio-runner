@@ -91,15 +91,11 @@ actor MemoFlow {
         try? await Screenshot.capture(to: screenshotAbs)
 
         // DAW clip — bounded preroll, no postroll (music after the utterance
-        // belongs to the next entry). Skip writing a clip when the buffer is
-        // essentially silent: BlackHole forwards literal zeros when the DAW
-        // transport is stopped, so a "clip" would just be silence pointed at
-        // from memos.md, useless for later playback.
+        // belongs to the next entry).
         var hasDaw = false
         if let dawBuffer = dawBuffer {
             let dawStart = startMs - Config.dawPrerollSec * 1000
-            if let dawData = dawBuffer.extract(startMs: dawStart, endMs: endMs),
-               !MemoFlow.isSilent(dawData) {
+            if let dawData = dawBuffer.extract(startMs: dawStart, endMs: endMs) {
                 do {
                     // Derive sample rate from the buffer's live bytesPerSecond, which
                     // the tap updates on its first callback to the real hardware rate.
@@ -133,24 +129,5 @@ actor MemoFlow {
 
         onLog("[\(ts)] \(text)")
         onConsolidate()
-    }
-
-    /// True when the interleaved Int16 PCM payload has no sample with
-    /// magnitude above ~-54 dBFS — typical of BlackHole with the DAW
-    /// transport stopped. We use peak rather than RMS so a single
-    /// genuine note doesn't get drowned out by surrounding silence in
-    /// the average.
-    private static func isSilent(_ pcm: Data) -> Bool {
-        guard pcm.count >= 2 else { return true }
-        let peakThreshold: Int32 = 64   // ≈ -54 dBFS for Int16
-        var peak: Int32 = 0
-        pcm.withUnsafeBytes { raw in
-            let buf = raw.bindMemory(to: Int16.self)
-            for sample in buf {
-                let a = Int32(sample == Int16.min ? Int16.max : abs(sample))
-                if a > peak { peak = a }
-            }
-        }
-        return peak < peakThreshold
     }
 }
