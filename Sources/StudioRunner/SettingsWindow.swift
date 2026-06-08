@@ -13,6 +13,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let languagePopup    = NSPopUpButton(frame: .zero, pullsDown: false)
     private let micPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
     private let dawPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let dawPrerollField  = NSTextField()
+    private let dawPrerollStepper = NSStepper()
     private let midiPopup        = NSPopUpButton(frame: .zero, pullsDown: false)
     private let mtcPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
     private let voicePopup       = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -30,7 +32,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 625),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 685),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -75,6 +77,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         dawLabel.alignment = .right
         dawPopup.target = self
         dawPopup.action = #selector(dawChanged)
+
+        // DAW preroll
+        dawPrerollField.alignment = .right
+        dawPrerollField.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        dawPrerollField.formatter = {
+            let f = NumberFormatter()
+            f.allowsFloats = false
+            f.minimum = NSNumber(value: Config.dawPrerollSecMin)
+            f.maximum = NSNumber(value: Config.dawPrerollSecMax)
+            return f
+        }()
+        dawPrerollField.target = self
+        dawPrerollField.action = #selector(dawPrerollCommitted)
+        (dawPrerollField.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = true
+
+        dawPrerollStepper.minValue = Config.dawPrerollSecMin
+        dawPrerollStepper.maxValue = Config.dawPrerollSecMax
+        dawPrerollStepper.increment = 1
+        dawPrerollStepper.valueWraps = false
+        dawPrerollStepper.target = self
+        dawPrerollStepper.action = #selector(dawPrerollStepped)
 
         // MIDI controller device
         let midiLabel = NSTextField(labelWithString: "MIDI controller:")
@@ -169,10 +192,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         hint.textColor = .secondaryLabelColor
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
+        let dawPrerollLabel = NSTextField(labelWithString: "DAW preroll:")
+        dawPrerollLabel.alignment = .right
+
+        let dawPrerollHint = NSTextField(labelWithString:
+            "How many seconds of DAW audio before each memo press are saved as the clip.")
+        dawPrerollHint.textColor = .secondaryLabelColor
+        dawPrerollHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        dawPrerollHint.isEditable = false
+        dawPrerollHint.isBordered = false
+        dawPrerollHint.backgroundColor = .clear
+        dawPrerollHint.lineBreakMode = .byWordWrapping
+        dawPrerollHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         let grid = NSGridView(views: [
             [langLabel,  languagePopup],
             [micLabel,   micPopup],
             [dawLabel,   dawPopup],
+            [dawPrerollLabel, makeDawPrerollRow()],
+            [NSGridCell.emptyContentView, dawPrerollHint],
             [midiLabel,  midiPopup],
             [mtcLabel,   mtcPopup],
             [NSGridCell.emptyContentView, mtcHint],
@@ -217,6 +255,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return stack
     }
 
+    private func makeDawPrerollRow() -> NSView {
+        let secondsLabel = NSTextField(labelWithString: "seconds")
+        let stack = NSStackView(views: [dawPrerollField, dawPrerollStepper, secondsLabel, NSView()])
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.alignment = .centerY
+        dawPrerollField.translatesAutoresizingMaskIntoConstraints = false
+        dawPrerollField.widthAnchor.constraint(equalToConstant: 50).isActive = true
+        return stack
+    }
+
     private func makeApiKeyFooter() -> NSView {
         let stack = NSStackView(views: [apiKeyTestButton, apiKeyStatus])
         stack.orientation = .horizontal
@@ -232,11 +281,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         populateLanguagePopup()
         populateMicPopup(devices: devices)
         populateDAWPopup(devices: devices)
+        populateDawPreroll()
         populateMidiPopup()
         populateMtcPopup()
         populateVoicePopup()
         populateVolume()
         populateApiKey()
+    }
+
+    private func populateDawPreroll() {
+        let seconds = Int(Config.dawPrerollSec.rounded())
+        dawPrerollField.integerValue = seconds
+        dawPrerollStepper.integerValue = seconds
     }
 
     private func populateLanguagePopup() {
@@ -457,6 +513,25 @@ it was.
     @objc private func dawChanged() {
         let name = (dawPopup.selectedItem?.representedObject as? String) ?? ""
         Config.setDawDeviceName(name)
+        coordinator?.applyDAWDeviceChange()
+    }
+
+    @objc private func dawPrerollStepped() {
+        let seconds = dawPrerollStepper.integerValue
+        dawPrerollField.integerValue = seconds
+        commitDawPreroll(seconds: Double(seconds))
+    }
+
+    @objc private func dawPrerollCommitted() {
+        let seconds = max(Int(Config.dawPrerollSecMin),
+                          min(Int(Config.dawPrerollSecMax), dawPrerollField.integerValue))
+        dawPrerollField.integerValue = seconds
+        dawPrerollStepper.integerValue = seconds
+        commitDawPreroll(seconds: Double(seconds))
+    }
+
+    private func commitDawPreroll(seconds: Double) {
+        Config.setDawPrerollSec(seconds)
         coordinator?.applyDAWDeviceChange()
     }
 

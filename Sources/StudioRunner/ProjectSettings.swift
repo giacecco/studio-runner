@@ -16,6 +16,7 @@ struct ProjectSettings: Codable {
     var ttsVolumePercent: Double?
     var micDeviceName: String?
     var dawDeviceName: String?
+    var dawPrerollSec: Double?    // nil = use the built-in default (10 s)
     var midiDeviceName: String?    // nil = accept from any MIDI device
     var midiBindings: MIDIBindingsStore.Pair?
     var mtcSourceName: String?    // nil = accept MTC from any source

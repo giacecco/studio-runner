@@ -180,7 +180,19 @@ enum Config {
         saveSettings()
     }
 
-    static let dawPrerollSec: Double = 10
+    static let dawPrerollSecDefault: Double = 10
+    static let dawPrerollSecMin: Double = 1
+    static let dawPrerollSecMax: Double = 60
+
+    static var dawPrerollSec: Double {
+        guard let v = settings.dawPrerollSec else { return dawPrerollSecDefault }
+        return min(dawPrerollSecMax, max(dawPrerollSecMin, v))
+    }
+    static func setDawPrerollSec(_ seconds: Double) {
+        let clamped = min(dawPrerollSecMax, max(dawPrerollSecMin, seconds))
+        settings.dawPrerollSec = clamped == dawPrerollSecDefault ? nil : clamped
+        saveSettings()
+    }
 
     static let micSampleRate: Double = 16_000
     static let micChannels: UInt32 = 1
