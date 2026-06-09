@@ -93,6 +93,26 @@ fi
 mkdir -p "${OUT_DIR}"
 rsync -a --delete "${STAGING}/" "${OUT_DIR}/"
 
+# Mirror the bundle into /Applications so Spotlight and Launchpad pick it
+# up. A symlink there is silently ignored by the Spotlight indexer, so
+# replace any pre-existing symlink with a real directory before rsyncing.
+# Set STUDIO_SKIP_APPLICATIONS=1 to opt out.
+INSTALL_DIR=${STUDIO_INSTALL_DIR:-/Applications}
+INSTALLED="${INSTALL_DIR}/${APP_BUNDLE}"
+if [[ "${STUDIO_SKIP_APPLICATIONS:-}" != "1" ]] && [[ -w "${INSTALL_DIR}" ]]; then
+    if [[ -L "${INSTALLED}" ]]; then
+        echo "==> removing symlink ${INSTALLED}"
+        rm "${INSTALLED}"
+    fi
+    echo "==> installing to ${INSTALLED}"
+    mkdir -p "${INSTALLED}"
+    rsync -a --delete "${STAGING}/" "${INSTALLED}/"
+    # Nudge Spotlight to reindex the freshly written bundle.
+    mdimport "${INSTALLED}" >/dev/null 2>&1 || true
+elif [[ "${STUDIO_SKIP_APPLICATIONS:-}" != "1" ]]; then
+    echo "==> skipping install to ${INSTALL_DIR} (not writable)"
+fi
+
 echo "==> done: ${OUT_DIR}"
 echo "    run:  open ${OUT_DIR}"
 echo "    tail: log stream --predicate 'process == \"StudioRunner\"' --style compact"

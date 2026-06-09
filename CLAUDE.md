@@ -210,6 +210,8 @@ opened from Finder to switch projects.
 
 - Re-sign with a Developer ID certificate (see `build.sh`'s comments).
 - Grant Microphone + Screen Recording permissions on first launch.
-- Optionally drag `StudioRunner.app` into `/Applications` and add it to
-  Login Items.
+- Optionally add `/Applications/StudioRunner.app` to Login Items.
+  `build.sh` mirrors the freshly built bundle into `/Applications` by
+  default (override with `STUDIO_INSTALL_DIR=...`, opt out with
+  `STUDIO_SKIP_APPLICATIONS=1`).
 - Set the API key in Settings (menu bar icon → Settings…, or ⌘,).
