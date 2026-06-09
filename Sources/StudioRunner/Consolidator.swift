@@ -56,6 +56,8 @@ actor Consolidator {
       Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely. Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
     Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in memos.md for later lookup.
 
+    The producer may also hand-edit Session timeline bullets directly. If you find a bullet that lacks both a `YYYY-MM-DD` prefix and an existing `(before HH:MM)` marker, prepend `(before HH:MM)` using the consolidation time provided in the user message — i.e. format the bullet as `- (before HH:MM) — <producer text verbatim>`. This records that you noticed the entry by that time but can't pin down exactly when it was written. Keep the producer's wording and the bullet's position in the list. Once a bullet carries `(before HH:MM)`, leave that marker untouched on subsequent passes.
+
     Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.
     """
 
@@ -76,6 +78,9 @@ actor Consolidator {
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
         let memos = unprocessed.map { "\($0.body)\n---" }.joined(separator: "\n\n")
         let user = """
+        === Consolidation time ===
+        \(Timestamps.human())
+
         === Current state ===
         \(state.isEmpty ? "(empty — first consolidation)" : state)
 
