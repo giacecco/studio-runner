@@ -57,6 +57,7 @@ enum Config {
         let fileURL = ProjectSettings.projectFileURL(root: projectRoot)
         if let loaded = ProjectSettings.load(from: fileURL) {
             settings = loaded
+            backfillDefaultsIfNeeded()
             return true
         }
         if let fallbackURL = ProjectSettings.globalFallbackURL,
@@ -77,6 +78,19 @@ enum Config {
             )
         }
         return false
+    }
+
+    /// Fill in tunables whose default we want pinned to the moment the
+    /// project was first opened, not floating with the app's compiled-in
+    /// default. Today that's just the DAW preroll. Saves through when
+    /// anything changed so the project file carries the explicit value.
+    private static func backfillDefaultsIfNeeded() {
+        var changed = false
+        if settings.dawPrerollSec == nil {
+            settings.dawPrerollSec = dawPrerollSecDefault
+            changed = true
+        }
+        if changed { saveSettings() }
     }
 
     static func saveSettings() {
@@ -190,7 +204,7 @@ enum Config {
     }
     static func setDawPrerollSec(_ seconds: Double) {
         let clamped = min(dawPrerollSecMax, max(dawPrerollSecMin, seconds))
-        settings.dawPrerollSec = clamped == dawPrerollSecDefault ? nil : clamped
+        settings.dawPrerollSec = clamped
         saveSettings()
     }
 
