@@ -13,6 +13,7 @@ host.addDeviceNameBasedDiscoveryPair(["Intech Studio: Grid", "StudioRunner"], ["
 
 var transport;
 var masterTrack;
+var cursorTrack;
 var isPlaying       = false;
 var wasPlaying      = false; // shared between Grid and done-signal handlers
 var isMuted         = false;
@@ -33,6 +34,8 @@ function init() {
   transport.tempo().addRawValueObserver(function(bpm)       { currentBpm = bpm;   });
   masterTrack = host.createMasterTrack(0);
   masterTrack.mute().addValueObserver(function(muted) { isMuted = muted; });
+  cursorTrack = host.createCursorTrack(0, 0);
+  cursorTrack.name().addValueObserver(function(name) { sendTrackName(name); });
   host.getMidiInPort(0).setMidiCallback(onMidiGrid);
   try {
     host.getMidiInPort(1).setMidiCallback(onMidiStudioRunner);
@@ -40,6 +43,17 @@ function init() {
   } catch(e) {
     // StudioRunner not running yet — ask will fall back to resume on button release
   }
+}
+
+// SysEx F0 7D 01 <ASCII name bytes> F7 — track name notification to StudioRunner.
+function sendTrackName(name) {
+  var hex = "F07D01";
+  for (var i = 0; i < name.length && i < 50; i++) {
+    var code = name.charCodeAt(i) & 0x7F;
+    hex += (code < 16 ? "0" : "") + code.toString(16).toUpperCase();
+  }
+  hex += "F7";
+  host.getMidiOutPort(0).sendSysex(hex);
 }
 
 // Grid: CC 44 = memo, CC 45 = ask (channel 0)

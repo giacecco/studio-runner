@@ -52,6 +52,8 @@ final class MIDIClient: @unchecked Sendable {
     private var virtualDestination = MIDIEndpointRef()  // "StudioRunner" destination — satisfies Bitwig's output requirement
     private var sources: [MIDIEndpointRef] = []
     private(set) var sourceNames: [String] = []
+    /// Most recently selected Bitwig track name, pushed via SysEx F0 7D 01 … F7.
+    private(set) var currentTrackName: String? = nil
 
     private let queue = DispatchQueue(label: "studio-runner.midi.dispatch")
     private var handlers: [UUID: (MIDIEvent) -> Void] = [:]
@@ -160,6 +162,16 @@ final class MIDIClient: @unchecked Sendable {
             let bytes: [UInt8] = withUnsafeBytes(of: &packet.data) { raw in
                 let typed = raw.bindMemory(to: UInt8.self)
                 return Array(typed.prefix(length))
+            }
+            // SysEx F0 7D 01 <ASCII name> F7 — track name from Bitwig.
+            if bytes.first == 0xF0 {
+                if bytes.count >= 4, bytes[1] == 0x7D, bytes[2] == 0x01, bytes.last == 0xF7 {
+                    let nameBytes = Array(bytes[3..<(bytes.count - 1)])
+                    let name = String(bytes: nameBytes, encoding: .ascii).map { $0.isEmpty ? nil : $0 } ?? nil
+                    queue.async { self.currentTrackName = name }
+                }
+                packet = MIDIPacketNext(&packet).pointee
+                continue
             }
             if let evt = Self.parse(bytes: bytes, portName: portName) {
                 queue.async { [weak self] in

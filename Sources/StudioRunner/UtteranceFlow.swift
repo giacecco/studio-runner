@@ -90,7 +90,7 @@ actor UtteranceFlow {
         pattern: #"\b(continuing\s+(?:the\s+)?)?(?:(production)|(mixing)|(mastering))\b"#,
         options: [.caseInsensitive])
 
-    func handle(startMs: Double, endMs: Double, dawPosition: String?, forceAnswer: Bool) async {
+    func handle(startMs: Double, endMs: Double, dawPosition: String?, dawTrack: String?, forceAnswer: Bool) async {
         var answered = false
         defer {
             // CC 119 un-ducks the Bitwig side after an answer cycle; harmless
@@ -201,12 +201,23 @@ actor UtteranceFlow {
             }
         }
 
+        let fullDawPos: String?
+        if let pos = dawPosition {
+            if let track = dawTrack, !track.isEmpty {
+                fullDawPos = "\(pos) in \"\(track)\""
+            } else {
+                fullDawPos = pos
+            }
+        } else {
+            fullDawPos = nil
+        }
+
         do {
             try MemoStream.append(.init(
                 timestamp: ts,
                 speaker: "The Producer",
                 text: text,
-                dawPosition: dawPosition,
+                dawPosition: fullDawPos,
                 audioRel: hasDaw ? audioRel : nil,
                 screenshotRel: screenshotRel
             ))

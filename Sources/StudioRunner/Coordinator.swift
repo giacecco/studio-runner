@@ -41,6 +41,7 @@ final class Coordinator {
     private final class Cursors {
         var utteranceStart = 0.0
         var utteranceDawPosition: String? = nil
+        var utteranceDawTrack: String? = nil
     }
 
     // MARK: - Bootstrap
@@ -227,6 +228,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         guard let sessionBinding = pair.session else { return }
         let cursors = self.cursors
         let mtcRecv = self.mtcReceiver
+        let midiClient = self.midi
 
         let g = MIDIGate(client: client, session: sessionBinding, memo: pair.memo, ask: pair.ask)
         g.onPressDown = { [stateStore = state, weak self] which in
@@ -238,6 +240,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             case .memo:
                 cursors.utteranceStart = now
                 cursors.utteranceDawPosition = mtcRecv?.position
+                cursors.utteranceDawTrack = midiClient?.currentTrackName
                 stateStore.setFromAnyThread(.recordingMemo)
                 // Pressing while the assistant is speaking cuts it off — the
                 // producer's voice takes priority, and the less TTS the mic
@@ -247,6 +250,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             case .ask:
                 cursors.utteranceStart = now
                 cursors.utteranceDawPosition = mtcRecv?.position
+                cursors.utteranceDawTrack = midiClient?.currentTrackName
                 stateStore.setFromAnyThread(.recordingAsk)
                 Task { @MainActor in self?.speaker.stop() }
                 DispatchQueue.main.async { soundAsk?.volume = Config.ttsVolume ?? 1.0; soundAsk?.play() }
@@ -266,8 +270,9 @@ few minutes on a fast connection. Progress is shown in the menu bar.
                 }
                 let s = cursors.utteranceStart
                 let pos = cursors.utteranceDawPosition
+                let track = cursors.utteranceDawTrack
                 let force = which == .ask
-                Task { await self?.utteranceFlow?.handle(startMs: s, endMs: now, dawPosition: pos, forceAnswer: force) }
+                Task { await self?.utteranceFlow?.handle(startMs: s, endMs: now, dawPosition: pos, dawTrack: track, forceAnswer: force) }
             }
         }
         g.start()
