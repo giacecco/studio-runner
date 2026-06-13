@@ -248,6 +248,14 @@ enum Config {
         saveSettings()
     }
 
+    // ── Session type ─────────────────────────────────────────────────────
+
+    static var currentSessionType: String? { settings.currentSessionType }
+    static func setCurrentSessionType(_ type: String?) {
+        settings.currentSessionType = type
+        saveSettings()
+    }
+
     // ── TTS ──────────────────────────────────────────────────────────────
 
     static var ttsVoiceName: String? { settings.ttsVoice }

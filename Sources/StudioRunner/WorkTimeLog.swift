@@ -3,6 +3,7 @@ import Foundation
 struct SessionRecord: Codable {
     let startEpoch: Int
     let endEpoch: Int
+    var sessionType: String?
 
     var duration: Int { endEpoch - startEpoch }
     var startDate: Date { Date(timeIntervalSince1970: TimeInterval(startEpoch)) }
@@ -16,12 +17,29 @@ struct WorkTimeLog: Codable {
 
     var totalSeconds: Int { sessions.reduce(0) { $0 + $1.duration } }
 
-    mutating func add(start: Date, end: Date) {
+    /// Reclassifies all trailing unclassified sessions (walking backwards
+    /// until a classified session is hit) to `type`. Call this when the
+    /// producer says "continuing <type>", meaning the current work mode
+    /// was already underway before they named it.
+    mutating func reclassifyAdjacentUnclassified(as type: String) {
+        var i = sessions.endIndex
+        while i > sessions.startIndex {
+            sessions.formIndex(before: &i)
+            if sessions[i].sessionType == nil {
+                sessions[i].sessionType = type
+            } else {
+                break
+            }
+        }
+    }
+
+    mutating func add(start: Date, end: Date, sessionType: String? = nil) {
         let d = Int(end.timeIntervalSince(start))
         guard d > 0 else { return }
         sessions.append(SessionRecord(
             startEpoch: Int(start.timeIntervalSince1970),
-            endEpoch:   Int(end.timeIntervalSince1970)
+            endEpoch:   Int(end.timeIntervalSince1970),
+            sessionType: sessionType
         ))
     }
 
@@ -71,8 +89,10 @@ struct WorkTimeLog: Codable {
         return f
     }()
 
+    static let knownTypes = ["production", "mixing", "mastering"]
+
     /// Markdown block for the `## Work time` section.
-    /// Sessions are listed newest-first; each line shows date, start–end, and duration.
+    /// Sessions are listed newest-first; each line shows date, start–end, duration, and type.
     func formattedSection() -> String {
         var lines = [Self.sectionHeading, ""]
         for rec in sessions.sorted(by: { $0.startEpoch > $1.startEpoch }) {
@@ -83,12 +103,33 @@ struct WorkTimeLog: Codable {
             let start    = Self.timeFormatter.string(from: rec.startDate)
             let end      = Self.timeFormatter.string(from: rec.endDate)
             let duration = Self.formatDuration(rec.duration)
-            lines.append("- \(yy)-\(mm)-\(dd), \(start) — \(end) · \(duration)")
+            let typeSuffix = rec.sessionType.map { ", \($0)" } ?? ""
+            lines.append("- \(yy)-\(mm)-\(dd), \(start) — \(end) · \(duration)\(typeSuffix)")
         }
         if !sessions.isEmpty {
             lines.append("")
-            let h = totalSeconds / 3600
-            let m = (totalSeconds % 3600) / 60
+            // Per-type breakdown
+            var byType: [String: Int] = [:]
+            var unclassified = 0
+            for rec in sessions {
+                if let t = rec.sessionType, Self.knownTypes.contains(t) {
+                    byType[t, default: 0] += rec.duration
+                } else {
+                    unclassified += rec.duration
+                }
+            }
+            let total = totalSeconds
+            for t in Self.knownTypes where (byType[t] ?? 0) > 0 {
+                let secs = byType[t]!
+                let pct  = secs * 100 / total
+                lines.append("\(t.capitalized): \(Self.formatDuration(secs)) (\(pct)%)")
+            }
+            if unclassified > 0 {
+                let pct = unclassified * 100 / total
+                lines.append("Unclassified: \(Self.formatDuration(unclassified)) (\(pct)%)")
+            }
+            let h = total / 3600
+            let m = (total % 3600) / 60
             let totalStr = h > 0 ? "\(h)h \(m)m" : "\(m)m"
             lines.append("Total: \(totalStr)")
         }

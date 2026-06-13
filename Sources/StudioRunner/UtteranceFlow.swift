@@ -32,6 +32,7 @@ actor UtteranceFlow {
     private let onClearSession: (@Sendable () -> Void)?
     private let onGoto: (@Sendable (Int, Int) -> Void)?
     private let onAnswerDone: (@Sendable () -> Void)?
+    private let onSessionType: (@Sendable (String, Bool) -> Void)?
 
     private var lastText = ""
     private var lastUtterance: String?   // most recent producer utterance
@@ -46,7 +47,8 @@ actor UtteranceFlow {
         onLog: @escaping (String) -> Void,
         onClearSession: (@Sendable () -> Void)? = nil,
         onGoto: (@Sendable (Int, Int) -> Void)? = nil,
-        onAnswerDone: (@Sendable () -> Void)? = nil
+        onAnswerDone: (@Sendable () -> Void)? = nil,
+        onSessionType: (@Sendable (String, Bool) -> Void)? = nil
     ) {
         self.micBuffer = mic
         self.dawBuffer = daw
@@ -57,6 +59,7 @@ actor UtteranceFlow {
         self.onClearSession = onClearSession
         self.onGoto = onGoto
         self.onAnswerDone = onAnswerDone
+        self.onSessionType = onSessionType
     }
 
     private static let answerSystemPrompt = """
@@ -79,6 +82,12 @@ actor UtteranceFlow {
     private static let fileRefRe     = try! NSRegularExpression(pattern: #"!?\[[^\]]*\]\([^)]*\)|(?:\.studiorunner\.d/)?(?:audio|screenshots)/\S+|\b\d{12}\.(?:wav|png)\b"#)
     private static let wakeWordRe    = try! NSRegularExpression(
         pattern: "\\b\(NSRegularExpression.escapedPattern(for: Config.wakeWord))\\b",
+        options: [.caseInsensitive])
+    // Matches "production", "mixing", or "mastering" as whole words.
+    // The Bool capture group signals whether "continuing" preceded the type
+    // (meaning back-fill adjacent unclassified sessions too).
+    private static let sessionTypeRe = try! NSRegularExpression(
+        pattern: #"\b(continuing\s+(?:the\s+)?)?(?:(production)|(mixing)|(mastering))\b"#,
         options: [.caseInsensitive])
 
     func handle(startMs: Double, endMs: Double, dawPosition: String?, forceAnswer: Bool) async {
@@ -123,8 +132,15 @@ actor UtteranceFlow {
             onLog("utterance: whisper failed — \(error)")
             return
         }
-        if text.isEmpty {
+        // A single-word (or empty) transcript on the answer button is almost
+        // certainly Whisper hallucinating on near-silence; treat it as a
+        // silent tap rather than a real utterance so no memo is written and
+        // the AI isn't called with noise.
+        let isSilentTap = text.isEmpty ||
+            (forceAnswer && text.split(whereSeparator: \.isWhitespace).count <= 1)
+        if isSilentTap {
             if forceAnswer {
+                if !text.isEmpty { onLog("utterance: near-silent tap (whisper: '\(text)')") }
                 answered = await handleSilentTap()
             } else {
                 onLog("utterance: whisper returned empty text")
@@ -138,6 +154,20 @@ actor UtteranceFlow {
             return
         }
         lastText = text
+
+        if let onSessionType {
+            let range = NSRange(text.startIndex..., in: text)
+            if let m = Self.sessionTypeRe.firstMatch(in: text, range: range) {
+                let isContinuing = m.range(at: 1).location != NSNotFound &&
+                    Range(m.range(at: 1), in: text).map({ !$0.isEmpty }) == true
+                let typeIndex = (2...4).first { m.range(at: $0).location != NSNotFound }
+                let typeNames = ["production", "mixing", "mastering"]
+                if let idx = typeIndex {
+                    let typeName = typeNames[idx - 2]
+                    onSessionType(typeName, isContinuing)
+                }
+            }
+        }
 
         let ts = Timestamps.compact(Date(timeIntervalSince1970: startMs / 1000))
         let screenshotRel = "\(Config.runnerDirName)/screenshots/\(ts).png"
@@ -238,14 +268,12 @@ actor UtteranceFlow {
             return
         }
         onLog("A: \(answer)")
-        appendChat(question: question, answer: answer)
-
         let actions = Self.mediaActions(from: answer)
         let spokenText = Self.stripMediaTags(from: answer)
+        appendChat(question: question, answer: spokenText)
 
         // Log the answer into the memo stream with assistant attribution so
-        // the consolidator can resolve open questions from it. The verbatim
-        // exchange (including tags) lives in chat.md.
+        // the consolidator can resolve open questions from it.
         if !spokenText.isEmpty {
             try? MemoStream.append(.init(
                 timestamp: Timestamps.compact(Date()),
@@ -335,7 +363,14 @@ actor UtteranceFlow {
     // MARK: - Chat log
 
     private func appendChat(question: String, answer: String) {
-        let block = "\n## \(Timestamps.human())\nThe Producer: \(question)\n\nStudio Runner: \(answer)\n\n---\n"
+        // Single-word transcripts are almost always Whisper hallucinations on
+        // near-silent presses of the answer button. Use a neutral label instead
+        // of echoing the noise back into the record.
+        let wordCount = question.split(whereSeparator: \.isWhitespace).count
+        let producerLine = wordCount <= 1
+            ? "- The Producer solicits a response"
+            : "- The Producer: \(question)"
+        let block = "\n## \(Timestamps.human())\n\(producerLine)\n- Studio Runner: \(answer)\n\n---\n"
         let url = Config.chatFile
         if let handle = try? FileHandle(forWritingTo: url) {
             _ = try? handle.seekToEnd()

@@ -334,6 +334,16 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             },
             onAnswerDone: { [midi = self.midi] in
                 midi?.signalAskDone()
+            },
+            onSessionType: { [weak self] type, isContinuing in
+                Task { @MainActor in
+                    Config.setCurrentSessionType(type)
+                    if isContinuing {
+                        self?.workTimeLog.reclassifyAdjacentUnclassified(as: type)
+                        self?.workTimeLog.save(to: Config.workTimeFile)
+                        self?.injectWorkTimeSection()
+                    }
+                }
             }
         )
         self.consolidator = consolidator
@@ -348,7 +358,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
     private func stopSessionComponents() {
         guard isSessionActive else { return }
         if let start = sessionArmTime {
-            workTimeLog.add(start: start, end: Date())
+            workTimeLog.add(start: start, end: Date(), sessionType: Config.currentSessionType)
             workTimeLog.save(to: Config.workTimeFile)
             sessionArmTime = nil
             injectWorkTimeSection()
