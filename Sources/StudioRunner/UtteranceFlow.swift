@@ -370,7 +370,8 @@ actor UtteranceFlow {
         let producerLine = wordCount <= 1
             ? "- The Producer solicits a response"
             : "- The Producer: \(question)"
-        let block = "\n## \(Timestamps.human())\n\(producerLine)\n- Studio Runner: \(answer)\n\n---\n"
+        let runnerLine = answer.isEmpty ? "" : "\n- Studio Runner: \(answer)"
+        let block = "\n## \(Timestamps.human())\n\(producerLine)\(runnerLine)\n\n---\n"
         let url = Config.chatFile
         if let handle = try? FileHandle(forWritingTo: url) {
             _ = try? handle.seekToEnd()

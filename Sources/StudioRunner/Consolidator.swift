@@ -52,9 +52,11 @@ actor Consolidator {
       `- YYYY-MM-DD — <prose summary of every meaningful utterance from that day, in a few sentences>`
       When a new production day's utterances arrive, COLLAPSE any per-utterance bullets that were previously written for older days into this one-per-day form. Preserve the meaning; drop minute-level timestamps and DAW positions from the collapsed text.
     - For the latest production day (the day of the most recent utterance): one bullet per meaningful utterance, format:
-      `- YYYY-MM-DD HH:MM[ at <daw_pos>] — <short paraphrase>`
-      Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely. Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
-    Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in memos.md for later lookup.
+      `- YYYY-MM-DD HH:MM[ at <daw_pos>][ (audio: <path>)] — <short paraphrase>`
+      Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely.
+      Include " (audio: <path>)" only when the source entry has an `audio:` field; use the path verbatim. Omit it for `Studio Runner:` entries (they have no audio clip).
+      Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
+    Do NOT include screenshot paths in timeline bullets.
 
     Memo entries are labelled by speaker. `The Producer:` lines are authoritative. `Studio Runner:` lines are your own earlier spoken answers to the producer's questions — use them to recognise what has already been answered (a question that received a satisfactory answer does not belong in Open questions), but never derive TODOs, track notes, or timeline facts from a Studio Runner line alone, and never include a Studio Runner line as a timeline bullet. A producer question that went unanswered, or whose answer said the context was missing, belongs in Open questions. A purely conversational exchange (the producer asking the assistant something and getting an answer) is not a meaningful timeline event unless it records a decision or new fact about the track that has not already been captured.
 
