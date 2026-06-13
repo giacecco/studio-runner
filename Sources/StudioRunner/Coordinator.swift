@@ -3,8 +3,10 @@ import CoreAudio
 import Foundation
 import UniformTypeIdentifiers
 
-private let soundMemo = NSSound(named: "Tink")
-private let soundAsk  = NSSound(named: "Pop")
+private let soundMemo   = NSSound(named: "Tink")
+private let soundAsk    = NSSound(named: "Pop")
+private let soundMemoUp = NSSound(named: "Ping")
+private let soundAskUp  = NSSound(named: "Glass")
 
 /// Top-level controller. Owns the long-lived components and brokers
 /// the session lifecycle.
@@ -31,6 +33,8 @@ final class Coordinator {
 
     private var settingsWindow: SettingsWindowController?
     private(set) var isSessionActive = false
+    private(set) var sessionArmTime: Date?
+    private var workTimeLog = WorkTimeLog()
 
     private let cursors = Cursors()
 
@@ -238,13 +242,13 @@ few minutes on a fast connection. Progress is shown in the menu bar.
                 // producer's voice takes priority, and the less TTS the mic
                 // ring picks up, the cleaner the new transcription.
                 Task { @MainActor in self?.speaker.stop() }
-                DispatchQueue.main.async { soundMemo?.play() }
+                DispatchQueue.main.async { soundMemo?.volume = Config.ttsVolume ?? 1.0; soundMemo?.play() }
             case .ask:
                 cursors.utteranceStart = now
                 cursors.utteranceDawPosition = mtcRecv?.position
                 stateStore.setFromAnyThread(.recordingAsk)
                 Task { @MainActor in self?.speaker.stop() }
-                DispatchQueue.main.async { soundAsk?.play() }
+                DispatchQueue.main.async { soundAsk?.volume = Config.ttsVolume ?? 1.0; soundAsk?.play() }
             }
         }
         g.onPressUp = { [weak self] which in
@@ -253,6 +257,11 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             case .session:
                 Task { @MainActor in self?.stopSessionComponents() }
             case .memo, .ask:
+                DispatchQueue.main.async {
+                    let snd = which == .memo ? soundMemoUp : soundAskUp
+                    snd?.volume = Config.ttsVolume ?? 1.0
+                    snd?.play()
+                }
                 let s = cursors.utteranceStart
                 let pos = cursors.utteranceDawPosition
                 let force = which == .ask
@@ -329,6 +338,8 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         )
         self.consolidator = consolidator
 
+        workTimeLog = WorkTimeLog.load(from: Config.workTimeFile)
+        sessionArmTime = Date()
         isSessionActive = true
         state.set(.idle)
         log("session started")
@@ -336,6 +347,12 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
     private func stopSessionComponents() {
         guard isSessionActive else { return }
+        if let start = sessionArmTime {
+            workTimeLog.add(start: start, end: Date())
+            workTimeLog.save(to: Config.workTimeFile)
+            sessionArmTime = nil
+            injectWorkTimeSection()
+        }
         mic?.stop(); mic = nil
         daw?.stop(); daw = nil
         utteranceFlow = nil
@@ -343,6 +360,21 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         isSessionActive = false
         state.set(.idle)
         log("session stopped")
+    }
+
+    private func injectWorkTimeSection() {
+        guard let notes = try? String(contentsOf: Config.notesFile, encoding: .utf8),
+              !notes.isEmpty else { return }
+        let updated = WorkTimeLog.inject(into: notes, log: workTimeLog)
+        try? updated.write(to: Config.notesFile, atomically: true, encoding: .utf8)
+    }
+
+    /// Today's accumulated arm time: previous disarms this day plus the running
+    /// current session. Read by StatusItemController for the live display.
+    var accumulatedTodaySeconds: Int {
+        let base = workTimeLog.todaySeconds()
+        guard let start = sessionArmTime else { return base }
+        return base + Int(Date().timeIntervalSince(start))
     }
 
     // MARK: - Re-learn

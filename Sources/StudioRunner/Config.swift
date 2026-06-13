@@ -24,6 +24,7 @@ enum Config {
     static var systemFile: URL { runnerDir.appendingPathComponent(systemFilename) }
     static var screenshotsDir: URL { runnerDir.appendingPathComponent("screenshots") }
     static var audioDir: URL { runnerDir.appendingPathComponent("audio") }
+    static var workTimeFile: URL { runnerDir.appendingPathComponent("work_time.json") }
     static func setProjectRoot(_ url: URL) {
         projectRoot = url
         loadProjectSettings()

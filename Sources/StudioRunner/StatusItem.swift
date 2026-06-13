@@ -10,6 +10,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private let statusRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var armTimer: Timer?
 
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
@@ -66,6 +67,41 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             button.image = makeIcon(for: state)
             button.toolTip = state.label
         }
+        let active = coordinator.isSessionActive
+        if active, armTimer == nil {
+            armTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refreshArmDisplay() }
+            }
+            refreshArmDisplay()
+        } else if !active, armTimer != nil {
+            armTimer?.invalidate()
+            armTimer = nil
+            if let button = statusItem.button {
+                button.attributedTitle = NSAttributedString(string: "")
+                button.imagePosition = .imageOnly
+            }
+        }
+    }
+
+    private static let armFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
+    private func refreshArmDisplay() {
+        guard let button = statusItem.button else { return }
+        guard let armStart = coordinator.sessionArmTime else { return }
+        let sessionSecs = Int(Date().timeIntervalSince(armStart))
+        let totalSecs   = coordinator.accumulatedTodaySeconds
+        let text = "\(WorkTimeLog.formatDuration(sessionSecs)) (\(formatTodayTotal(totalSecs))) "
+        button.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [.font: Self.armFont]
+        )
+        button.imagePosition = .imageRight
+    }
+
+    private func formatTodayTotal(_ totalSeconds: Int) -> String {
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
     private func statusLabel(for state: SessionState) -> String {
