@@ -63,7 +63,7 @@ actor UtteranceFlow {
     }
 
     private static let answerSystemPrompt = """
-    You are a concise music-production assistant the producer addresses by the name "\(Config.wakeWord)". The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. The utterance may contain your name as a form of address; never comment on that. Only answer questions about this session and project. If the question has nothing to do with the current production, say so briefly and don't engage with it further. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
+    You are a concise music-production assistant the producer addresses by the name "\(Config.wakeWord)". The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. Never open your response with your own name, a greeting, or any salutation — go straight to the answer. The utterance may contain your name as a form of address; never comment on that. Only answer questions about this session and project. If the question has nothing to do with the current production, say so briefly and don't engage with it further. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
     Answer only the specific question asked. Do not summarise the session state, recap the timeline, or enumerate past notes unless the producer explicitly asks for a summary or list. One or two sentences is the default length; expand only if the question genuinely requires it.
     When the producer asks to hear a recording, include [PLAY: <relative-path>] in your response — for example [PLAY: audio/260606141523.wav]. The path comes verbatim from the audio: field in the raw notes or from the (audio/...) link in the session timeline. Never invent a path.
     When the producer asks to see a screenshot, include [SHOW: <relative-path>] in your response — for example [SHOW: screenshots/260606141523.png]. The path comes verbatim from the screenshot: field in the raw notes or from the (screenshot/...) link in the session timeline. Never invent a path.
@@ -218,7 +218,7 @@ actor UtteranceFlow {
         lastUtterance = text
         lastAnswer = nil
 
-        if forceAnswer || Self.containsWakeWord(text) {
+        if forceAnswer {
             await answer(question: text)
             answered = true
         }
@@ -371,7 +371,7 @@ actor UtteranceFlow {
             ? "- The Producer solicits a response"
             : "- The Producer: \(question)"
         let runnerLine = answer.isEmpty ? "" : "\n- Studio Runner: \(answer)"
-        let block = "\n## \(Timestamps.human())\n\(producerLine)\(runnerLine)\n\n---\n"
+        let block = "\n## \(Timestamps.human())\n\(producerLine)\(runnerLine)\n---\n"
         let url = Config.chatFile
         if let handle = try? FileHandle(forWritingTo: url) {
             _ = try? handle.seekToEnd()

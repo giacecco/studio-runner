@@ -7,14 +7,15 @@ utterance pipeline that logs an entry to `.studiorunner.d/memos.md` with
 a full-screen screenshot and a DAW audio clip; the AI consolidates the
 stream into `studiorunner.md`:
 
-- **Talk button**: hold + speak → logged as above. If the transcript
-  contains the wake word "Runner" (`Config.wakeWord`), the AI also
-  answers from the current state; the exchange is appended to
+- **Talk button**: hold + speak → logged as above. No AI reply — the DAW
+  transport resumes the moment the button is released.
+- **Answer button**: hold + speak → same capture, but always answered —
+  the AI replies from the current state, the exchange is appended to
   `.studiorunner.d/chat.md`, the answer is logged into memos.md with
-  `Studio Runner:` attribution, and spoken via `AVSpeechSynthesizer`.
-- **Answer button**: hold + speak → same, but always answered — no wake
-  word needed. A silent tap (no speech) answers the last utterance if it
-  went unanswered, otherwise re-speaks the last answer.
+  `Studio Runner:` attribution, and spoken via `AVSpeechSynthesizer`. The
+  DAW transport stays paused until TTS finishes. A silent tap (no speech)
+  answers the last utterance if it went unanswered, otherwise re-speaks
+  the last answer.
 
 Pressing either button while TTS is speaking interrupts it (the press-down
 handler calls `Speaker.stop()`): the producer's voice takes priority, and
@@ -108,8 +109,9 @@ Three constants in `Config.swift` can only be changed by editing the source:
 - `Config.micGainDb` (25 dB): gain applied to the mic ring after conversion.
 - `Config.pruneAssets` (false): set to `true` to delete audio + screenshots
   after consolidation.
-- `Config.wakeWord` ("Runner"): saying this name in an utterance marks it
-  as addressed to the assistant and triggers a spoken answer.
+- `Config.wakeWord` ("Runner"): no longer used to trigger answers on the
+  talk button. Retained in `Config` and `UtteranceFlow` for potential
+  future use (e.g. filtering or logging).
 
 `aiEndpoint` and `aiModel` can be overridden per-project by editing the
 `.studiorunner` file directly (e.g. to point at Claude or a local proxy).
@@ -166,14 +168,11 @@ opened from Finder to switch projects.
   insight as the bun script: don't trust spawn-time timestamps — derive
   the wall-clock time of the oldest byte from `now − bytesInRing /
   bytesPerSecond`. This self-corrects for tap-thread jitter.
-- **One utterance pipeline, addressed-or-not decided after the fact.**
-  Both buttons run the identical capture path; whether the AI answers is
-  decided from the transcript (wake word) or the button used, never by
-  forcing the producer to pre-classify a thought as "memo" vs "ask".
-  The wake word is matched with a case-insensitive word-boundary regex —
-  deterministic, no AI intent-classification call, so a plain memo costs
-  no extra latency or tokens and the assistant can never speak
-  unprompted over monitoring or a take.
+- **Two distinct button roles.** Talk = pure memo (transcribe, log,
+  consolidate, resume transport immediately). Answer = memo + AI reply
+  (transcribe, log, call AI, speak, resume transport after TTS). The
+  producer pre-classifies by button choice rather than by wake word —
+  cleaner transport behaviour and no risk of the AI speaking over a take.
 - **Utterance flow writes memos.md *first*, then the AI.** A crash or
   network failure during answering or consolidation can never lose a
   note.
