@@ -515,7 +515,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Clear session?"
-        alert.informativeText = "Resets the session timeline, memo stream, chat history, and all recorded audio and screenshots. Track notes, TODOs, and open questions are kept. This cannot be undone."
+        alert.informativeText = "Resets the memo stream, chat history, and all recorded audio and screenshots. Removes completed TODOs. The session timeline, track notes, open questions, and unchecked TODOs are kept. This cannot be undone."
         alert.addButton(withTitle: "Clear Session")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -548,22 +548,65 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
         guard let content = try? String(contentsOf: Config.notesFile, encoding: .utf8) else { return }
         var lines = content.components(separatedBy: "\n")
-        guard let headingIdx = lines.firstIndex(where: { $0 == "## Session timeline" }) else {
-            log("clear session: section not found in \(Config.notesFilename)")
-            return
-        }
-        let afterHeading = headingIdx + 1
-        if let nextSection = lines[afterHeading...].firstIndex(where: { $0.hasPrefix("## ") }) {
-            lines.removeSubrange(afterHeading..<nextSection)
-        } else {
-            lines.removeSubrange(afterHeading...)
-            lines.append("")
+        if let todoIdx = lines.firstIndex(where: { $0 == "## TODO" }) {
+            let start = todoIdx + 1
+            let end = lines[start...].firstIndex(where: { $0.hasPrefix("## ") }) ?? lines.endIndex
+            lines = lines.enumerated().compactMap { (i, line) in
+                guard i >= start && i < end else { return line }
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("- [X]") || t.hasPrefix("- [x]") { return nil }
+                return line
+            }
         }
         do {
             try lines.joined(separator: "\n").write(to: Config.notesFile, atomically: true, encoding: .utf8)
             log("session cleared\(logSuffix)")
         } catch {
             log("clear session: write failed — \(error)")
+            return
+        }
+        Task { await self.collapseTimelineAfterClear() }
+    }
+
+    private static let timelineCollapsePrompt = """
+    You compress the session timeline from a music-production log.
+    For every day BEFORE today: output exactly one bullet in the form `- YYYY-MM-DD — <one-sentence summary of all meaningful work that day>`.
+    For today: output each existing bullet unchanged.
+    Output ONLY the bullet lines — no section heading, no blank lines at start or end, no preamble.
+    """
+
+    private func collapseTimelineAfterClear() async {
+        guard let content = try? String(contentsOf: Config.notesFile, encoding: .utf8) else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard let headingIdx = lines.firstIndex(where: { $0 == "## Session timeline" }) else { return }
+        let start = headingIdx + 1
+        let end = lines[start...].firstIndex(where: { $0.hasPrefix("## ") }) ?? lines.endIndex
+        let timelineText = lines[start..<end]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !timelineText.isEmpty else { return }
+
+        let today = String(Timestamps.human(Date()).prefix(10))
+        let user = "Today: \(today)\n\n=== Session timeline ===\n\(timelineText)"
+
+        let collapsed: String
+        do {
+            collapsed = try await AIClient.call(
+                systemPrompt: Self.timelineCollapsePrompt, userPrompt: user)
+        } catch {
+            log("clear session: timeline collapse failed — \(error)")
+            return
+        }
+
+        var collapsedLines = collapsed.components(separatedBy: "\n")
+        // Ensure a blank line before the next section heading.
+        if !collapsedLines.last!.isEmpty { collapsedLines.append("") }
+        lines.replaceSubrange(start..<end, with: collapsedLines)
+        do {
+            try lines.joined(separator: "\n").write(to: Config.notesFile, atomically: true, encoding: .utf8)
+            log("clear session: timeline collapsed")
+        } catch {
+            log("clear session: timeline collapse write failed — \(error)")
         }
     }
 

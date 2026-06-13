@@ -38,7 +38,7 @@ actor Consolidator {
     Always preserve these four sections in this exact order:
 
     ## TODO
-    Checkbox list of action items the producer has mentioned (e.g. "- [ ] tame vocal sibilance bar 32"). Tick items the producer has marked done.
+    Checkbox list of action items the producer has mentioned (e.g. "- [ ] tame vocal sibilance bar 32"). When an item is done, mark it `- [X]` but never remove it — completed items stay in the list until the session is cleared.
 
     ## Track notes
     General considerations and decisions about the track (BPM, key, arrangement, mix decisions, sound choices). Free-form prose or short bullets.
@@ -52,11 +52,10 @@ actor Consolidator {
       `- YYYY-MM-DD — <prose summary of every meaningful utterance from that day, in a few sentences>`
       When a new production day's utterances arrive, COLLAPSE any per-utterance bullets that were previously written for older days into this one-per-day form. Preserve the meaning; drop minute-level timestamps and DAW positions from the collapsed text.
     - For the latest production day (the day of the most recent utterance): one bullet per meaningful utterance, format:
-      `- YYYY-MM-DD HH:MM[ at <daw_pos>][ (audio: <path>)] — <short paraphrase>`
+      `- YYYY-MM-DD HH:MM[ at <daw_pos>] — <short paraphrase>`
       Include " at <daw_pos>" (e.g. " at 2:58" or " at 1:35 in \"Male vox\"") only when the source entry has a `daw_pos:` value; render it verbatim after " at "; otherwise omit it entirely.
-      Include " (audio: <path>)" only when the source entry has an `audio:` field; use the path verbatim. Omit it for `Studio Runner:` entries (they have no audio clip).
       Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
-    Do NOT include screenshot paths in timeline bullets.
+    Do NOT include audio or screenshot paths in timeline bullets — they live in memos.md only.
 
     Memo entries are labelled by speaker. `The Producer:` lines are authoritative. `Studio Runner:` lines are your own earlier spoken answers to the producer's questions — use them to recognise what has already been answered (a question that received a satisfactory answer does not belong in Open questions), but never derive TODOs, track notes, or timeline facts from a Studio Runner line alone, and never include a Studio Runner line as a timeline bullet. A producer question that went unanswered, or whose answer said the context was missing, belongs in Open questions. A timeline bullet earns its place only by adding information that did not exist before — a production action, a decision, or a new observation about the track. Any entry that only references or retrieves existing information (a question, a status check, a playback request, a test, or anything with no new production content) must be omitted from the timeline entirely.
 
