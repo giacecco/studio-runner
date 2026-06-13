@@ -12,8 +12,12 @@ host.defineMidiPorts(2, 1);
 host.addDeviceNameBasedDiscoveryPair(["Intech Studio: Grid", "StudioRunner"], ["IAC Driver Bus 1"]);
 
 var transport;
+var masterTrack;
 var isPlaying       = false;
 var wasPlaying      = false; // shared between Grid and done-signal handlers
+var isMuted         = false;
+var wasMuted        = false; // shared between Grid and done-signal handlers
+var isArmed         = false; // true while StudioRunner session button is held
 var currentPos      = 0;
 var pausedAt        = 0;
 var awaitingAskDone = false;
@@ -27,6 +31,8 @@ function init() {
   transport.isPlaying().addValueObserver(function(playing) { isPlaying = playing; });
   transport.playPosition().addValueObserver(function(pos)   { currentPos = pos;   });
   transport.tempo().addRawValueObserver(function(bpm)       { currentBpm = bpm;   });
+  masterTrack = host.createMasterTrack(0);
+  masterTrack.mute().addValueObserver(function(muted) { isMuted = muted; });
   host.getMidiInPort(0).setMidiCallback(onMidiGrid);
   try {
     host.getMidiInPort(1).setMidiCallback(onMidiStudioRunner);
@@ -43,6 +49,7 @@ function onMidiGrid(status, data1, data2) {
   var isReleased = data2 === 0;
 
   if (!isCC || (data1 !== 44 && data1 !== 45)) return;
+  if (!isArmed) return;
 
   if (isPressed) {
     wasPlaying = isPlaying;
@@ -51,28 +58,36 @@ function onMidiGrid(status, data1, data2) {
       transport.playStartPosition().set(pausedAt);
       transport.stop();
     }
+    wasMuted = isMuted;
+    if (!wasMuted) masterTrack.mute().set(true);
     awaitingAskDone = (data1 === 45) && hasSignalPort;
   }
 
   if (isReleased) {
     if (!awaitingAskDone) {
-      // Memo: resume on release (only if we actually paused it)
+      // Memo: resume transport and un-mute on release
       if (wasPlaying) {
         transport.play();
         wasPlaying = false;
       }
+      if (!wasMuted) masterTrack.mute().set(false);
+      wasMuted = false;
     }
-    // Ask: resume is handled by onMidiStudioRunner when done signal arrives
+    // Ask: resume and un-mute are handled by onMidiStudioRunner when done signal arrives
   }
 }
 
 // StudioRunner virtual source signals (all ch16):
+//   CC 117 value=127 → session armed, value=0 → session disarmed
 //   CC 116 value=minutes, CC 115 value=seconds, CC 114 value=127 → jump transport
 //   CC 119 value=127                                              → ask flow done
 function onMidiStudioRunner(status, data1, data2) {
   var isCC = (status & 0xF0) === 0xB0;
   var ch   = status & 0x0F;
   if (!isCC || ch !== 15) return;
+
+  // Session armed/disarmed
+  if (data1 === 117) { isArmed = (data2 === 127); return; }
 
   // GOTO: latch minutes/seconds then execute jump on trigger
   if (data1 === 116) { pendingMinutes = data2; return; }
@@ -87,11 +102,15 @@ function onMidiStudioRunner(status, data1, data2) {
 
   // Ask flow done
   if (data1 !== 119 || data2 !== 127) return;
-  if (awaitingAskDone && wasPlaying) {
-    host.scheduleTask(function() { transport.play(); }, null, 1000);
+  if (awaitingAskDone) {
+    if (wasPlaying) {
+      host.scheduleTask(function() { transport.play(); }, null, 1000);
+    }
+    if (!wasMuted) masterTrack.mute().set(false);
   }
   awaitingAskDone = false;
   wasPlaying = false;
+  wasMuted = false;
 }
 
 function flush() {}

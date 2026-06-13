@@ -233,6 +233,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             let now = Date().timeIntervalSince1970 * 1000
             switch which {
             case .session:
+                self?.midi?.signalSessionArmed(true)
                 Task { await self?._startSessionComponents() }
             case .memo:
                 cursors.utteranceStart = now
@@ -255,6 +256,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             let now = Date().timeIntervalSince1970 * 1000
             switch which {
             case .session:
+                self?.midi?.signalSessionArmed(false)
                 Task { @MainActor in self?.stopSessionComponents() }
             case .memo, .ask:
                 DispatchQueue.main.async {

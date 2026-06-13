@@ -80,6 +80,19 @@ final class MIDIClient: @unchecked Sendable {
         MIDIReceived(virtualSource, &packetList)
     }
 
+    /// Send CC 117 ch16 to signal Bitwig whether the session is armed (value=127) or not (value=0).
+    func signalSessionArmed(_ armed: Bool) {
+        guard virtualSource != 0 else { return }
+        var packet = MIDIPacket()
+        packet.timeStamp = 0
+        packet.length = 3
+        packet.data.0 = 0xBF  // CC, channel 15 (0-indexed)
+        packet.data.1 = 117
+        packet.data.2 = armed ? 127 : 0
+        var packetList = MIDIPacketList(numPackets: 1, packet: packet)
+        MIDIReceived(virtualSource, &packetList)
+    }
+
     /// Send CC 116 (minutes) + CC 115 (seconds) + CC 114 trigger on ch16
     /// to tell the Bitwig script to jump the transport to the given wall-clock position.
     func signalGoto(minutes: Int, seconds: Int) {
