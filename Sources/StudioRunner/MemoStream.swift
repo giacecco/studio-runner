@@ -96,7 +96,8 @@ enum MemoStream {
 
     struct NewEntry {
         let timestamp: String        // YYMMDDHHMMSS
-        let micText: String
+        let speaker: String          // "The Producer", or "Studio Runner" for assistant answers
+        let text: String
         let dawPosition: String?     // DAW timeline position e.g. "2:03", nil if MTC unavailable
         let audioRel: String?
         let screenshotRel: String?
@@ -109,7 +110,7 @@ enum MemoStream {
         if let pos = entry.dawPosition { lines.append("daw_pos: \(pos)") }
         if let a = entry.audioRel { lines.append("audio: \(a)") }
         if let s = entry.screenshotRel { lines.append("screenshot: \(s)") }
-        lines.append("The Producer: \(entry.micText)")
+        lines.append("\(entry.speaker): \(entry.text)")
         lines.append("---")
         lines.append("")
         let appendage = lines.joined(separator: "\n")

@@ -1,14 +1,25 @@
 # CLAUDE.md — studio-runner
 
-Native Swift macOS menu bar app for music-production sessions. Two MIDI
-push-to-talk buttons learnt at startup:
+Native Swift macOS menu bar app for music-production sessions. Three MIDI
+buttons learnt at startup: a **session button** (hold to arm) and two
+push-to-talk buttons (talk / answer). Every talk/answer press feeds one
+utterance pipeline that logs an entry to `.studiorunner.d/memos.md` with
+a full-screen screenshot and a DAW audio clip; the AI consolidates the
+stream into `studiorunner.md`:
 
-- **Memo button**: hold + speak → entry appended to
-  `.studiorunner.d/memos.md` with a full-screen screenshot and a DAW audio
-  clip; DeepSeek consolidates the memo stream into `studiorunner.md`.
-- **Ask button**: hold + speak → DeepSeek answers from the current
-  state, the reply is appended to `.studiorunner.d/chat.md`, and spoken
-  via `AVSpeechSynthesizer`.
+- **Talk button**: hold + speak → logged as above. If the transcript
+  contains the wake word "Runner" (`Config.wakeWord`), the AI also
+  answers from the current state; the exchange is appended to
+  `.studiorunner.d/chat.md`, the answer is logged into memos.md with
+  `Studio Runner:` attribution, and spoken via `AVSpeechSynthesizer`.
+- **Answer button**: hold + speak → same, but always answered — no wake
+  word needed. A silent tap (no speech) answers the last utterance if it
+  went unanswered, otherwise re-speaks the last answer.
+
+Pressing either button while TTS is speaking interrupts it (the press-down
+handler calls `Speaker.stop()`): the producer's voice takes priority, and
+it limits how much of the assistant's own speech leaks into the mic ring —
+there is no echo cancellation.
 
 ## Build & run
 
@@ -62,11 +73,10 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `WAVWriter.swift` | Minimal RIFF/WAVE header writer for trimmed clips. |
 | `Whisper.swift` | `Process` invocation of `whisper-cli` (whisper.cpp). |
 | `Screenshot.swift` | `Process` invocation of `screencapture -x`. |
-| `DeepSeek.swift` | URLSession POST to DeepSeek's Anthropic-compatible Messages endpoint; assembles the three-layer system prompt. |
+| `AIClient.swift` | URLSession POST to any Anthropic-compatible Messages endpoint (DeepSeek by default, Claude, local proxy…); assembles the three-layer system prompt. |
 | `Speak.swift` | AVSpeechSynthesizer wrapper for the spoken reply. |
-| `MemoStream.swift` | Append / parse / watermark / prune of `.studiorunner.d/memos.md`. |
-| `MemoFlow.swift` | Per-press memo pipeline: extract mic → transcribe → screenshot → DAW clip + transcript → append raw entry → schedule consolidation. |
-| `AskFlow.swift` | Per-press ask pipeline: extract mic → transcribe → DeepSeek call with state + memo tail → append chat → speak. |
+| `MemoStream.swift` | Append / parse / watermark / prune of `.studiorunner.d/memos.md`. Entries carry a speaker label (`The Producer:` / `Studio Runner:`). |
+| `UtteranceFlow.swift` | Per-press pipeline for both buttons: extract mic → transcribe → screenshot → DAW clip → append raw entry → if addressed (wake word or answer button) AI call with state + memo tail → append chat + assistant memo entry → speak → execute tags → schedule consolidation. |
 | `Consolidator.swift` | Serial, debounced actor that rewrites `studiorunner.md` from the post-watermark slice and advances the watermark. |
 | `Timestamps.swift` | YYMMDDHHMMSS and YY-MM-DD HH:MM:SS formatters. |
 
@@ -78,7 +88,7 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `ggml-medium.en.bin` model | Whisper model, ~1.5 GB at `~/Library/Application Support/StudioRunner/models/`. Auto-downloaded from Hugging Face on first launch if missing; lives outside `/opt/homebrew/` so `brew cleanup` can't wipe it. The multilingual `ggml-medium.bin` is fetched on demand when the language is set to anything other than English. |
 | `screencapture` (macOS built-in) | Full-screen screenshots. |
 | BlackHole 2ch (or any virtual loopback) | Optional. If the named CoreAudio input device is missing, DAW capture is skipped and a warning is logged. |
-| DeepSeek API key | Consolidation + Q&A. Anthropic-compatible endpoint. Required. |
+| AI API key | Consolidation + Q&A. Any Anthropic-compatible endpoint (DeepSeek is the default). Required. |
 
 No Swift packages are pulled in — everything is Apple-provided
 (AppKit, AVFoundation, CoreAudio, CoreMIDI, Foundation).
@@ -94,10 +104,12 @@ launch it shows the "No project" prompt (New / Open). Double-clicking a
 `.studiorunner` file in Finder opens that project directly via
 `application(_:open:)`.
 
-Two constants in `Config.swift` can only be changed by editing the source:
+Three constants in `Config.swift` can only be changed by editing the source:
 - `Config.micGainDb` (25 dB): gain applied to the mic ring after conversion.
 - `Config.pruneAssets` (false): set to `true` to delete audio + screenshots
   after consolidation.
+- `Config.wakeWord` ("Runner"): saying this name in an utterance marks it
+  as addressed to the assistant and triggers a spoken answer.
 
 `aiEndpoint` and `aiModel` can be overridden per-project by editing the
 `.studiorunner` file directly (e.g. to point at Claude or a local proxy).
@@ -125,7 +137,7 @@ opened from Finder to switch projects.
 ## Key design decisions
 
 - **One menu bar app, no daemon, no IPC.** All the long-lived state
-  (MIDI, audio rings, DeepSeek client, consolidation worker) lives
+  (MIDI, audio rings, AI client, consolidation worker) lives
   inside the single `Coordinator`. The status item and menu observe a
   shared `SessionStateStore`.
 - **CoreMIDI rather than the old @julusian/midi node binding.** The
@@ -154,26 +166,43 @@ opened from Finder to switch projects.
   insight as the bun script: don't trust spawn-time timestamps — derive
   the wall-clock time of the oldest byte from `now − bytesInRing /
   bytesPerSecond`. This self-corrects for tap-thread jitter.
-- **Memo flow writes memos.md *first*, then DeepSeek.** A crash or
-  network failure during consolidation can never lose a note.
-- **Three-layer system prompt** assembled inside `DeepSeek.call(...)`:
+- **One utterance pipeline, addressed-or-not decided after the fact.**
+  Both buttons run the identical capture path; whether the AI answers is
+  decided from the transcript (wake word) or the button used, never by
+  forcing the producer to pre-classify a thought as "memo" vs "ask".
+  The wake word is matched with a case-insensitive word-boundary regex —
+  deterministic, no AI intent-classification call, so a plain memo costs
+  no extra latency or tokens and the assistant can never speak
+  unprompted over monitoring or a take.
+- **Utterance flow writes memos.md *first*, then the AI.** A crash or
+  network failure during answering or consolidation can never lose a
+  note.
+- **Answers feed back into the memo stream.** The spoken reply is
+  appended to memos.md as a `Studio Runner:` entry, so consolidation can
+  resolve Open questions from it. The consolidator prompt marks producer
+  lines as authoritative and forbids deriving TODOs or track facts from
+  assistant lines alone, guarding against the AI re-ingesting its own
+  speculation as fact. chat.md keeps the verbatim exchange (including
+  action tags).
+- **Three-layer system prompt** assembled inside `AIClient.call(...)`:
   1. `Config.baseRole` — hardcoded persona, always present.
   2. `.studiorunner.d/system.md` — per-project user-edited context.
   3. Call-specific prompt — consolidation format rules, or the ask
      flow's "use the context, say so if it's missing" guidance.
   Joined with `\n\n---\n\n`. `studiorunner.md` is NOT in the system
   prompt — it lives in the user message because it's dynamic state.
-- **Speaker label in memo entries.** Each utterance is logged as `The
-  Producer: <text>`. The label is a vestige of an earlier flow where a
-  parallel `DAW: <text>` line carried whisper's transcription of the DAW
-  clip; that pass was removed because hallucinations on near-silent
-  loopback audio outweighed the value of the transcript. The DAW clip
-  itself is still captured and linked from the entry's `audio:` field
-  for on-demand playback.
-- **DeepSeek via the Anthropic-compatible endpoint**
-  (`/anthropic/v1/messages`, `x-api-key`, `anthropic-version:
-  2023-06-01`). OpenAI-style mode is not used — kept consistent with
-  the user's other tooling.
+- **Speaker label in memo entries.** Producer utterances are logged as
+  `The Producer: <text>`, assistant answers as `Studio Runner: <text>`.
+  (The label predates the answer-logging: an earlier flow had a parallel
+  `DAW: <text>` line carrying whisper's transcription of the DAW clip,
+  removed because hallucinations on near-silent loopback audio outweighed
+  the value. The DAW clip itself is still captured and linked from the
+  entry's `audio:` field for on-demand playback.)
+- **Anthropic Messages protocol, not OpenAI-style.** The client speaks
+  `x-api-key` + `anthropic-version: 2023-06-01` to whatever endpoint
+  `aiEndpoint` names (default: DeepSeek's `/anthropic/v1/messages`) —
+  kept consistent with the user's other tooling. Any provider that
+  implements the Anthropic Messages protocol works.
 - **TTS via AVSpeechSynthesizer**, not `say` + `afplay`. Volume is set
   directly on `AVSpeechUtterance.volume` (0.0–1.0), bypassing the
   modern macOS voices' silent ignore of inline `[[volm]]` directives.

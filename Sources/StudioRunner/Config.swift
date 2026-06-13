@@ -158,6 +158,14 @@ enum Config {
     }
     static let screencaptureBinary = "/usr/sbin/screencapture"
 
+    // ── Wake word ────────────────────────────────────────────────────────
+
+    /// Saying this name anywhere in an utterance marks it as addressed to
+    /// the assistant: the utterance is still logged like any memo, and a
+    /// spoken answer is produced. Matched case-insensitively on word
+    /// boundaries.
+    static let wakeWord = "Runner"
+
     // ── Audio ────────────────────────────────────────────────────────────
 
     static let micGainDb: Double = 25

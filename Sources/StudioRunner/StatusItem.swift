@@ -35,9 +35,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(statusRow)
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Re-learn buttons…", #selector(actionRelearn)))
-        menu.addItem(.separator())
-
         menu.addItem(makeItem("New project…", #selector(actionNewProject), key: "n"))
         menu.addItem(makeItem("Open project…", #selector(actionOpenProject), key: "o"))
         menu.addItem(makeItem("Reveal project in Finder", #selector(actionReveal), key: "R"))
@@ -140,8 +137,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         for item in menu.items {
             guard let action = item.action else { continue }
             switch action {
-            case #selector(actionRelearn),
-                 #selector(actionReveal),
+            case #selector(actionReveal),
                  #selector(actionSettings):
                 item.isEnabled = hasProject
             case #selector(actionOpenNotes), #selector(actionClearSession):
@@ -159,7 +155,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: - Actions
 
-    @objc private func actionRelearn() { coordinator.relearnBindings() }
     @objc private func actionOpenProject() { coordinator.promptOpenProject() }
     @objc private func actionNewProject()  { coordinator.promptNewProject() }
     @objc private func actionReveal() { coordinator.revealProjectInFinder() }

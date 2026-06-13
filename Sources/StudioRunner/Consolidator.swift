@@ -56,6 +56,8 @@ actor Consolidator {
       Include " at <daw_pos>" (e.g. " at 2:58") only when the source entry has a `daw_pos:` value; otherwise omit it entirely. Date and time come from the entry's `## YYYY-MM-DD HH:MM:SS` header line (truncate to HH:MM).
     Do NOT include `[audio]` / `[screenshot]` links in timeline bullets — the asset paths stay in memos.md for later lookup.
 
+    Memo entries are labelled by speaker. `The Producer:` lines are authoritative. `Studio Runner:` lines are your own earlier spoken answers to the producer's questions — use them to recognise what has already been answered (a question that received a satisfactory answer does not belong in Open questions), but never derive TODOs, track notes, or timeline facts from a Studio Runner line alone. A producer question that went unanswered, or whose answer said the context was missing, belongs in Open questions. A purely conversational exchange (the producer asking the assistant something and getting an answer) is usually not a meaningful timeline event unless it records a decision or new fact about the track.
+
     The producer may also hand-edit Session timeline bullets directly. If you find a bullet that lacks both a `YYYY-MM-DD` prefix and an existing `(before HH:MM)` marker, prepend `(before HH:MM)` using the consolidation time provided in the user message — i.e. format the bullet as `- (before HH:MM) — <producer text verbatim>`. This records that you noticed the entry by that time but can't pin down exactly when it was written. Keep the producer's wording and the bullet's position in the list. Once a bullet carries `(before HH:MM)`, leave that marker untouched on subsequent passes.
 
     Keep prior content unless the new utterances explicitly supersede it. Output ONLY the full updated markdown document — no preamble, no explanation, no code fence.
@@ -101,7 +103,10 @@ actor Consolidator {
         let toWrite = updated.hasSuffix("\n") ? updated : updated + "\n"
         do {
             try toWrite.write(to: Config.notesFile, atomically: true, encoding: .utf8)
-            let newWatermark = unprocessed.last!.human
+            // Max, not file-order last: concurrent transcriptions can land in
+            // memos.md out of chronological order, and a watermark older than
+            // an already-consolidated entry would re-include it next pass.
+            let newWatermark = unprocessed.map(\.human).max()!
             try MemoStream.advanceWatermark(to: newWatermark)
         } catch {
             onLog("consolidate: write failed — \(error)")

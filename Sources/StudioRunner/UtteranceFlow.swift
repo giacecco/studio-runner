@@ -2,44 +2,65 @@ import AppKit
 import AVFoundation
 import Foundation
 
-/// Handles one ask press end-to-end:
-///   1. Extract the mic clip from the rolling buffer
-///   2. Transcribe it
-///   3. Build a prompt with the current studiorunner.md plus the
-///      post-watermark tail of memos.md (so a freshly-spoken note can be cited
-///      even before consolidation has caught up)
-///   4. Append the Q&A to chat.md
-///   5. Speak the reply via AVSpeechSynthesizer
-///   6. Execute any [PLAY: path] / [SHOW: path] / [GOTO: M:SS] tags from the answer after TTS
-actor AskFlow {
+/// Handles one push-to-talk utterance end-to-end. Both buttons feed this
+/// single pipeline — every utterance gets the full capture treatment:
+///   1. Extract the mic clip from the rolling buffer (preroll + postroll)
+///   2. Transcribe it via whisper-cli
+///   3. Take a full-screen screenshot
+///   4. Extract the DAW clip (if the loopback device is present)
+///   5. Append a memos.md entry — always, BEFORE any AI call, so a crash or
+///      network failure can never lose a note
+///   6. If the utterance is addressed to the assistant — wake word
+///      (`Config.wakeWord`) in the transcript, or the answer button was used —
+///      call the AI with the session state, append the exchange to chat.md,
+///      log the spoken answer into memos.md with assistant attribution (so
+///      consolidation can resolve open questions from it), speak the reply,
+///      and execute any [PLAY:] / [SHOW:] / [GOTO:] / [CLEAR_SESSION] tags
+///   7. Signal the consolidator
+///
+/// A silent tap on the answer button (press + release with no speech) is the
+/// rescue path for a missed wake word: it answers the most recent utterance,
+/// or re-speaks the last answer if that utterance was already answered.
+actor UtteranceFlow {
     private let micBuffer: RollingBuffer
+    private let dawBuffer: RollingBuffer?
     private let speaker: Speaker
+
     private let onState: (SessionState) -> Void
+    private let onConsolidate: () -> Void
     private let onLog: (String) -> Void
     private let onClearSession: (@Sendable () -> Void)?
     private let onGoto: (@Sendable (Int, Int) -> Void)?
-    private let onDone: (@Sendable () -> Void)?
+    private let onAnswerDone: (@Sendable () -> Void)?
+
+    private var lastText = ""
+    private var lastUtterance: String?   // most recent producer utterance
+    private var lastAnswer: String?      // what was spoken for it; nil if unanswered
 
     init(
         mic: RollingBuffer,
+        daw: RollingBuffer?,
         speaker: Speaker,
         onState: @escaping (SessionState) -> Void,
+        onConsolidate: @escaping () -> Void,
         onLog: @escaping (String) -> Void,
         onClearSession: (@Sendable () -> Void)? = nil,
         onGoto: (@Sendable (Int, Int) -> Void)? = nil,
-        onDone: (@Sendable () -> Void)? = nil
+        onAnswerDone: (@Sendable () -> Void)? = nil
     ) {
         self.micBuffer = mic
+        self.dawBuffer = daw
         self.speaker = speaker
         self.onState = onState
+        self.onConsolidate = onConsolidate
         self.onLog = onLog
         self.onClearSession = onClearSession
         self.onGoto = onGoto
-        self.onDone = onDone
+        self.onAnswerDone = onAnswerDone
     }
 
-    private static let systemPrompt = """
-    You are a concise music-production assistant. The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. Only answer questions about this session and project. If the question has nothing to do with the current production, say so briefly and don't engage with it further. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
+    private static let answerSystemPrompt = """
+    You are a concise music-production assistant the producer addresses by the name "\(Config.wakeWord)". The producer is mid-session, listening through speakers, so answer briefly and practically — short sentences, no preamble. The utterance may contain your name as a form of address; never comment on that. Only answer questions about this session and project. If the question has nothing to do with the current production, say so briefly and don't engage with it further. When referring to a specific past note, cite its time in HH:MM form. If the answer is not in the provided context, say so.
     Answer only the specific question asked. Do not summarise the session state, recap the timeline, or enumerate past notes unless the producer explicitly asks for a summary or list. One or two sentences is the default length; expand only if the question genuinely requires it.
     When the producer asks to hear a recording, include [PLAY: <relative-path>] in your response — for example [PLAY: audio/260606141523.wav]. The path comes verbatim from the audio: field in the raw notes or from the (audio/...) link in the session timeline. Never invent a path.
     When the producer asks to see a screenshot, include [SHOW: <relative-path>] in your response — for example [SHOW: screenshots/260606141523.png]. The path comes verbatim from the screenshot: field in the raw notes or from the (screenshot/...) link in the session timeline. Never invent a path.
@@ -56,19 +77,31 @@ actor AskFlow {
     private static let allRe         = try! NSRegularExpression(pattern: #"\[(?:PLAY|SHOW):\s*[^\]]+\]|\[CLEAR_SESSION\]|\[GOTO:\s*\d+:\d{2}\]"#)
     // Catches bare paths, markdown links/images, and bare timestamp filenames the AI echoes from context.
     private static let fileRefRe     = try! NSRegularExpression(pattern: #"!?\[[^\]]*\]\([^)]*\)|(?:\.studiorunner\.d/)?(?:audio|screenshots)/\S+|\b\d{12}\.(?:wav|png)\b"#)
+    private static let wakeWordRe    = try! NSRegularExpression(
+        pattern: "\\b\(NSRegularExpression.escapedPattern(for: Config.wakeWord))\\b",
+        options: [.caseInsensitive])
 
-    func handle(startMs: Double, endMs: Double) async {
-        defer { onDone?() }
+    func handle(startMs: Double, endMs: Double, dawPosition: String?, forceAnswer: Bool) async {
+        var answered = false
+        defer {
+            // CC 119 un-ducks the Bitwig side after an answer cycle; harmless
+            // when nothing was ducked, so err on the side of sending it.
+            if forceAnswer || answered { onAnswerDone?() }
+            onState(.idle)
+        }
         onState(.processingMemo)
 
+        // Mic extract: preroll on the head, postroll on the tail.
         let micStart = startMs - Config.micPrerollSec * 1000
         let micEnd = endMs + Config.micPostrollSec * 1000
         guard let micData = micBuffer.extract(startMs: micStart, endMs: micEnd) else {
-            onState(.idle); return
+            onLog("utterance: mic buffer returned nil — bytesWritten=\(micBuffer.totalBytesWritten) window=[\(Int(micStart))–\(Int(micEnd))]")
+            return
         }
 
+        // Write a temp WAV for whisper.
         let tmpMic = FileManager.default.temporaryDirectory
-            .appendingPathComponent("studio-runner-ask-\(Int(startMs)).wav")
+            .appendingPathComponent("studio-runner-utterance-\(Int(startMs)).wav")
         do {
             try WAVWriter.write(
                 samples: micData,
@@ -78,19 +111,112 @@ actor AskFlow {
                 to: tmpMic
             )
         } catch {
-            onLog("ask: WAV write failed — \(error)"); onState(.idle); return
+            onLog("utterance: WAV write failed — \(error)")
+            return
         }
         defer { try? FileManager.default.removeItem(at: tmpMic) }
 
-        let question: String
+        let text: String
         do {
-            question = try await Whisper.transcribe(wavURL: tmpMic)
+            text = try await Whisper.transcribe(wavURL: tmpMic)
         } catch {
-            onLog("ask: whisper failed — \(error)"); onState(.idle); return
+            onLog("utterance: whisper failed — \(error)")
+            return
         }
-        if question.isEmpty { onState(.idle); return }
-        onLog("Q: \(question)")
+        if text.isEmpty {
+            if forceAnswer {
+                answered = await handleSilentTap()
+            } else {
+                onLog("utterance: whisper returned empty text")
+            }
+            return
+        }
+        if text == lastText {
+            // Suppress consecutive identical transcriptions; clear so the same
+            // phrase can recur after a different one.
+            onLog("utterance: suppressed duplicate '\(text.prefix(60))'")
+            return
+        }
+        lastText = text
 
+        let ts = Timestamps.compact(Date(timeIntervalSince1970: startMs / 1000))
+        let screenshotRel = "\(Config.runnerDirName)/screenshots/\(ts).png"
+        let audioRel = "\(Config.runnerDirName)/audio/\(ts).wav"
+        let screenshotAbs = Config.screenshotsDir.appendingPathComponent("\(ts).png")
+        let audioAbs = Config.audioDir.appendingPathComponent("\(ts).wav")
+
+        try? await Screenshot.capture(to: screenshotAbs)
+
+        // DAW clip — bounded preroll, no postroll (music after the utterance
+        // belongs to the next entry).
+        var hasDaw = false
+        if let dawBuffer = dawBuffer {
+            let dawStart = startMs - Config.dawPrerollSec * 1000
+            if let dawData = dawBuffer.extract(startMs: dawStart, endMs: endMs) {
+                do {
+                    // Derive sample rate from the buffer's live bytesPerSecond, which
+                    // the tap updates on its first callback to the real hardware rate.
+                    let dawSR = dawBuffer.bytesPerSecond / Int(Config.dawChannels) / MemoryLayout<Int16>.size
+                    try WAVWriter.write(
+                        samples: dawData,
+                        sampleRate: dawSR,
+                        channels: Int(Config.dawChannels),
+                        bitDepth: Config.dawBitDepth,
+                        to: audioAbs
+                    )
+                    hasDaw = true
+                } catch {
+                    onLog("utterance: DAW WAV write failed — \(error)")
+                }
+            }
+        }
+
+        do {
+            try MemoStream.append(.init(
+                timestamp: ts,
+                speaker: "The Producer",
+                text: text,
+                dawPosition: dawPosition,
+                audioRel: hasDaw ? audioRel : nil,
+                screenshotRel: screenshotRel
+            ))
+        } catch {
+            onLog("utterance: memos.md append failed — \(error)")
+            return
+        }
+        onLog("[\(ts)] \(text)")
+        lastUtterance = text
+        lastAnswer = nil
+
+        if forceAnswer || Self.containsWakeWord(text) {
+            await answer(question: text)
+            answered = true
+        }
+        onConsolidate()
+    }
+
+    // MARK: - Answering
+
+    /// Silent tap on the answer button: answer the last utterance if it went
+    /// unanswered (missed wake word), otherwise repeat the last answer.
+    /// Returns true if anything was answered or spoken.
+    private func handleSilentTap() async -> Bool {
+        if let answer = lastAnswer {
+            onState(.askSpeaking)
+            await speaker.speak(answer)
+            return true
+        }
+        if let utterance = lastUtterance {
+            onLog("utterance: answering last utterance on silent tap")
+            await answer(question: utterance)
+            onConsolidate()
+            return true
+        }
+        onLog("utterance: silent tap with nothing to answer")
+        return false
+    }
+
+    private func answer(question: String) async {
         onState(.askThinking)
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
         let recent = (try? MemoStream.unprocessedFormatted()) ?? ""
@@ -106,9 +232,10 @@ actor AskFlow {
 
         let answer: String
         do {
-            answer = try await AIClient.call(systemPrompt: Self.systemPrompt, userPrompt: user)
+            answer = try await AIClient.call(systemPrompt: Self.answerSystemPrompt, userPrompt: user)
         } catch {
-            onLog("ask: AI call failed — \(error)"); onState(.idle); return
+            onLog("utterance: AI call failed — \(error)")
+            return
         }
         onLog("A: \(answer)")
         appendChat(question: question, answer: answer)
@@ -116,7 +243,22 @@ actor AskFlow {
         let actions = Self.mediaActions(from: answer)
         let spokenText = Self.stripMediaTags(from: answer)
 
+        // Log the answer into the memo stream with assistant attribution so
+        // the consolidator can resolve open questions from it. The verbatim
+        // exchange (including tags) lives in chat.md.
+        if !spokenText.isEmpty {
+            try? MemoStream.append(.init(
+                timestamp: Timestamps.compact(Date()),
+                speaker: "Studio Runner",
+                text: spokenText,
+                dawPosition: nil,
+                audioRel: nil,
+                screenshotRel: nil
+            ))
+        }
+
         let textToSpeak = spokenText.isEmpty && !actions.isEmpty ? "OK" : spokenText
+        lastAnswer = textToSpeak.isEmpty ? nil : textToSpeak
         if !textToSpeak.isEmpty {
             onState(.askSpeaking)
             await speaker.speak(textToSpeak)
@@ -130,8 +272,13 @@ actor AskFlow {
             case .goto(let mins, let secs):   onGoto?(mins, secs)
             }
         }
+    }
 
-        onState(.idle)
+    // MARK: - Wake word
+
+    private static func containsWakeWord(_ text: String) -> Bool {
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return wakeWordRe.firstMatch(in: text, range: range) != nil
     }
 
     // MARK: - Tag parsing

@@ -16,6 +16,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let dawPrerollField  = NSTextField()
     private let dawPrerollStepper = NSStepper()
     private let midiPopup        = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let relearnButton    = NSButton(title: "Re-learn buttons…", target: nil, action: nil)
     private let mtcPopup         = NSPopUpButton(frame: .zero, pullsDown: false)
     private let voicePopup       = NSPopUpButton(frame: .zero, pullsDown: false)
     private let volumeSlider     = NSSlider()
@@ -32,7 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     init(coordinator: Coordinator) {
         self.coordinator = coordinator
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 685),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 718),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -45,6 +46,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window.delegate = self
         buildLayout()
         populate()
+        coordinator.state.observe { [weak self] state in
+            DispatchQueue.main.async {
+                switch state {
+                case .learningSession, .learningMemo, .learningAsk:
+                    self?.relearnButton.isEnabled = false
+                default:
+                    self?.relearnButton.isEnabled = true
+                }
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
@@ -104,6 +115,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         midiLabel.alignment = .right
         midiPopup.target = self
         midiPopup.action = #selector(midiDeviceChanged)
+
+        relearnButton.bezelStyle = .rounded
+        relearnButton.target = self
+        relearnButton.action = #selector(relearnTapped)
+
+        let midiHint = NSTextField(labelWithString:
+            "Press \u{201C}Re-learn\u{201D} whenever you change controller or want to assign different buttons. The window will close and the app will prompt you to press the session, talk, and answer buttons in turn.")
+        midiHint.textColor = .secondaryLabelColor
+        midiHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        midiHint.isEditable = false
+        midiHint.isBordered = false
+        midiHint.backgroundColor = .clear
+        midiHint.lineBreakMode = .byWordWrapping
+        midiHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // MTC source
         let mtcLabel = NSTextField(labelWithString: "MTC source:")
@@ -211,7 +236,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             [dawLabel,   dawPopup],
             [dawPrerollLabel, makeDawPrerollRow()],
             [NSGridCell.emptyContentView, dawPrerollHint],
-            [midiLabel,  midiPopup],
+            [midiLabel,  makeMidiRow()],
+            [NSGridCell.emptyContentView, midiHint],
             [mtcLabel,   mtcPopup],
             [NSGridCell.emptyContentView, mtcHint],
             [voiceLabel, voicePopup],
@@ -255,6 +281,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return stack
     }
 
+    private func makeMidiRow() -> NSView {
+        let stack = NSStackView(views: [midiPopup, relearnButton, NSView()])
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        stack.alignment = .centerY
+        return stack
+    }
+
     private func makeDawPrerollRow() -> NSView {
         let secondsLabel = NSTextField(labelWithString: "seconds")
         let stack = NSStackView(views: [dawPrerollField, dawPrerollStepper, secondsLabel, NSView()])
@@ -287,6 +321,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         populateVoicePopup()
         populateVolume()
         populateApiKey()
+        relearnButton.isEnabled = true
     }
 
     private func populateDawPreroll() {
@@ -533,6 +568,10 @@ it was.
     private func commitDawPreroll(seconds: Double) {
         Config.setDawPrerollSec(seconds)
         coordinator?.applyDAWDeviceChange()
+    }
+
+    @objc private func relearnTapped() {
+        coordinator?.relearnBindings()
     }
 
     @objc private func midiDeviceChanged() {

@@ -11,8 +11,8 @@ private let soundAsk  = NSSound(named: "Pop")
 ///
 /// The MIDI client is permanent — it starts at bootstrap and stays
 /// connected until quit. A dedicated "session" button (learned alongside
-/// memo and ask) controls the audio components: pressing it starts the
-/// mic/DAW recorders and the memo/ask flows; releasing it stops them.
+/// talk and answer) controls the audio components: pressing it starts the
+/// mic/DAW recorders and the utterance flow; releasing it stops them.
 @MainActor
 final class Coordinator {
     let state = SessionStateStore()
@@ -26,8 +26,7 @@ final class Coordinator {
     // Session components — live only while the session button is held
     private var mic: MicRecorder?
     private var daw: DAWRecorder?
-    private var memoFlow: MemoFlow?
-    private var askFlow: AskFlow?
+    private var utteranceFlow: UtteranceFlow?
     private var consolidator: Consolidator?
 
     private var settingsWindow: SettingsWindowController?
@@ -36,9 +35,8 @@ final class Coordinator {
     private let cursors = Cursors()
 
     private final class Cursors {
-        var memoStart = 0.0
-        var askStart  = 0.0
-        var memoDawPosition: String? = nil
+        var utteranceStart = 0.0
+        var utteranceDawPosition: String? = nil
     }
 
     // MARK: - Bootstrap
@@ -118,16 +116,13 @@ few minutes on a fast connection. Progress is shown in the menu bar.
     }
 
     private func promptFirstProject() {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "No project found"
-        alert.informativeText = "Create a new Studio Runner project or open an existing one."
-        alert.addButton(withTitle: "New project…")
-        alert.addButton(withTitle: "Open existing…")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: promptNewProject()
-        case .alertSecondButtonReturn: promptOpenProject()
-        default: state.set(.notReady(reason: "no project — use the menu to open or create one"))
+        let picker = ProjectPickerWindow()
+        switch picker.runModal() {
+        case .openRecent(let url): openProjectFile(url)
+        case .new: promptNewProject()
+        case .openExisting: promptOpenProject()
+        case .cancel:
+            state.set(.notReady(reason: "no project — use the menu to open or create one"))
         }
     }
 
@@ -147,6 +142,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             return
         }
         Config.settings.save(to: url)
+        RecentProjects.note(url)
         if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(url.deletingLastPathComponent())
         bootstrap()
@@ -184,6 +180,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         let root = url.deletingLastPathComponent()
         if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(root)
+        RecentProjects.note(url)
         bootstrap()
     }
 
@@ -219,7 +216,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
         setupGate(client: client, pair: pair)
         state.set(.idle)
-        log("MIDI ready — session: \(pair.session!.human), memo: \(pair.memo.human), ask: \(pair.ask.human)")
+        log("MIDI ready — session: \(pair.session!.human), talk: \(pair.memo.human), answer: \(pair.ask.human)")
     }
 
     private func setupGate(client: MIDIClient, pair: MIDIBindingsStore.Pair) {
@@ -234,13 +231,19 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             case .session:
                 Task { await self?._startSessionComponents() }
             case .memo:
-                cursors.memoStart = now
-                cursors.memoDawPosition = mtcRecv?.position
+                cursors.utteranceStart = now
+                cursors.utteranceDawPosition = mtcRecv?.position
                 stateStore.setFromAnyThread(.recordingMemo)
+                // Pressing while the assistant is speaking cuts it off — the
+                // producer's voice takes priority, and the less TTS the mic
+                // ring picks up, the cleaner the new transcription.
+                Task { @MainActor in self?.speaker.stop() }
                 DispatchQueue.main.async { soundMemo?.play() }
             case .ask:
-                cursors.askStart = now
+                cursors.utteranceStart = now
+                cursors.utteranceDawPosition = mtcRecv?.position
                 stateStore.setFromAnyThread(.recordingAsk)
+                Task { @MainActor in self?.speaker.stop() }
                 DispatchQueue.main.async { soundAsk?.play() }
             }
         }
@@ -249,13 +252,11 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             switch which {
             case .session:
                 Task { @MainActor in self?.stopSessionComponents() }
-            case .memo:
-                let s = cursors.memoStart
-                let pos = cursors.memoDawPosition
-                Task { await self?.memoFlow?.handle(startMs: s, endMs: now, dawPosition: pos) }
-            case .ask:
-                let s = cursors.askStart
-                Task { await self?.askFlow?.handle(startMs: s, endMs: now) }
+            case .memo, .ask:
+                let s = cursors.utteranceStart
+                let pos = cursors.utteranceDawPosition
+                let force = which == .ask
+                Task { await self?.utteranceFlow?.handle(startMs: s, endMs: now, dawPosition: pos, forceAnswer: force) }
             }
         }
         g.start()
@@ -309,17 +310,12 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         }
         let consolidator = Consolidator(onState: onStateBg, onLog: onLogBg)
         let onConsolidate: @Sendable () -> Void = { Task { await consolidator.schedule() } }
-        self.memoFlow = MemoFlow(
+        self.utteranceFlow = UtteranceFlow(
             mic: micRec.buffer,
             daw: self.daw?.buffer,
-            onState: onStateBg,
-            onConsolidate: onConsolidate,
-            onLog: onLogBg
-        )
-        self.askFlow = AskFlow(
-            mic: micRec.buffer,
             speaker: speaker,
             onState: onStateBg,
+            onConsolidate: onConsolidate,
             onLog: onLogBg,
             onClearSession: { [weak self] in
                 Task { @MainActor in self?.clearSessionHeadless() }
@@ -327,7 +323,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             onGoto: { [midi = self.midi] minutes, seconds in
                 midi?.signalGoto(minutes: minutes, seconds: seconds)
             },
-            onDone: { [midi = self.midi] in
+            onAnswerDone: { [midi = self.midi] in
                 midi?.signalAskDone()
             }
         )
@@ -342,8 +338,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         guard isSessionActive else { return }
         mic?.stop(); mic = nil
         daw?.stop(); daw = nil
-        memoFlow = nil
-        askFlow = nil
+        utteranceFlow = nil
         consolidator = nil
         isSessionActive = false
         state.set(.idle)

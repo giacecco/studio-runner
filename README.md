@@ -1,20 +1,34 @@
 # Studio Runner
 
-A native macOS menu bar app that turns two MIDI buttons into a
+A native macOS menu bar app that turns three MIDI buttons into a
 voice-driven production assistant.
 
-- **Hold the memo button** + speak → your note is transcribed (locally,
-  via whisper.cpp), a full-screen screenshot of the DAW is taken, the
-  last 10 s of DAW audio is captured, and the whole thing is
+Every utterance gets the same treatment — you never have to decide in
+advance whether you're leaving a note, logging a todo, or asking a
+question:
+
+- **Hold the talk button** + speak → your utterance is transcribed
+  (locally, via whisper.cpp), a full-screen screenshot of the DAW is
+  taken, the last 10 s of DAW audio is captured, and the whole thing is
   consolidated by an AI into a live track-state markdown
   (`studiorunner.md`). If your DAW is transmitting MTC, each entry is
   tagged with its DAW timeline position (e.g. `2:03`) so you can
   navigate the log by where you were in the session.
-- **Hold the ask button** + speak → the AI answers a question against
-  the current state, appends the exchange to `chat.md`, and reads the
-  reply back through the system voice. If the question is about a
-  specific note the AI can jump the DAW transport to that position —
-  "take me to where I mentioned Vocalign."
+- **Say "Runner" anywhere in the utterance** → it is still logged as
+  above, AND the AI answers against the current session state, appends
+  the exchange to `chat.md`, and reads the reply back through the
+  system voice. If the question is about a specific note the AI can
+  jump the DAW transport to that position — "Runner, take me to where I
+  mentioned Vocalign."
+- **Hold the answer button** + speak → same as saying "Runner": the
+  utterance is logged and always answered, no wake word needed. A
+  silent tap on it (press + release without speaking) answers your last
+  utterance — the rescue when transcription missed the wake word — or
+  repeats the last answer.
+
+Pressing either button while the assistant is speaking cuts it off —
+your voice takes priority, and it keeps the spoken reply out of the new
+recording.
 
 No Dock icon, no terminal session — just a status item that changes
 glyph while you're holding a button.
@@ -61,8 +75,8 @@ The first launch will:
    under `.studiorunner.d/`. After this, you can also launch a project
    directly by double-clicking its `.studiorunner` file in Finder — the
    app does not remember the last project across launches.
-4. Ask you to press each button in turn (memo first, then ask). The
-   bindings persist across launches.
+4. Ask you to press each button in turn — **session first, then talk, then
+   answer**. The bindings persist across launches.
 
 ## API key
 
@@ -103,16 +117,19 @@ Changing the language does three things at once:
     audio/YYMMDDHHMMSS.wav     ← DAW clips, CD quality
 ```
 
-## Ask flow — voice commands
+## Asking — voice commands
 
 Studio Runner is a junior assistant for *this* session — it knows what you
 said, when you said it, and where in the timeline you said it. It is not a
 production advisor. For production advice, go to a real expert human
 producer.
 
-During an ask session the AI answers questions against the current session
-state, but it can also trigger actions. Speak naturally — exact phrasing
-does not matter.
+Address it by name ("Runner, …") on the talk button, or use the answer
+button, and the AI answers against the current session state. The question
+itself is logged like any other utterance — a question the AI couldn't
+answer lands in the **Open questions** section of `studiorunner.md`. The
+AI can also trigger actions. Speak naturally — exact phrasing does not
+matter.
 
 | What to say | What happens |
 |---|---|
@@ -151,7 +168,7 @@ MTC must have been transmitting when the original memo was taken — if no
 ## DAW timeline position (MTC)
 
 When your DAW transmits MTC (MIDI Timecode), Studio Runner snaps the playhead
-position at the moment you press the memo button and records it alongside the
+position at the moment you press the talk button and records it alongside the
 note. The session timeline in `studiorunner.md` then reads like:
 
 ```
@@ -178,15 +195,20 @@ Open **Audio MIDI Setup** (Spotlight → "Audio MIDI Setup"), choose
 Open **Settings → MTC source** and pick **IAC Driver Bus 1**. Leave it on
 **Any** if IAC is the only source sending timecode.
 
-The DAW must be in playback (not paused) when you press the memo button — MTC
+The DAW must be in playback (not paused) when you press the talk button — MTC
 is only transmitted while the transport is running.
 
 ## Bitwig: suspend transport while speaking
 
 A single Bitwig controller script in `tools/bitwig-suspend/` pauses the
 Bitwig transport when you press a button and resumes it when you release
-(memo) or when StudioRunner finishes responding (ask — after transcription,
-AI reply, TTS, and any clip playback).
+(talk) or when StudioRunner finishes responding (answer — after
+transcription, AI reply, TTS, and any clip playback).
+
+Note that the script decides per pedal, so a wake-word question spoken on
+the talk button resumes the transport on release — the reply will speak
+over playback. Use the answer button when you want Bitwig to stay paused
+until the reply finishes.
 
 If the transport was already stopped when you pressed a button, it stays
 stopped — the script only resumes what it paused.
@@ -240,7 +262,7 @@ Controllers page and disable then re-enable the script.
 
 ### Changing the MIDI buttons
 
-The script is hard-coded to CC 44 (memo) and CC 45 (ask) on the Intech
+The script is hard-coded to CC 44 (talk) and CC 45 (answer) on the Intech
 Studio: Grid. If you re-learn the bindings in StudioRunner, update those
 values in `StudioRunnerTransport.control.js` and reload the script in Bitwig.
 
