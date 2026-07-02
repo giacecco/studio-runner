@@ -29,16 +29,43 @@ struct ProjectSettings: Codable {
 
     // MARK: - Persistence
 
+    enum LoadOutcome {
+        case loaded(ProjectSettings)
+        case missing
+        /// The file exists but can't be read or decoded — callers must NOT
+        /// treat this like `.missing`, or the next save will clobber the
+        /// user's (probably just hand-mistyped) project file.
+        case corrupt(Error)
+    }
+
+    static func loadOutcome(from url: URL) -> LoadOutcome {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        do {
+            let data = try Data(contentsOf: url)
+            return .loaded(try JSONDecoder().decode(ProjectSettings.self, from: data))
+        } catch {
+            return .corrupt(error)
+        }
+    }
+
     static func load(from url: URL) -> ProjectSettings? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(ProjectSettings.self, from: data)
+        if case .loaded(let settings) = loadOutcome(from: url) { return settings }
+        return nil
     }
 
     func save(to url: URL) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(self) else { return }
-        try? data.write(to: url, options: .atomic)
+        do {
+            let data = try encoder.encode(self)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            // A silent failure here means in-memory settings (including
+            // freshly learned MIDI bindings) diverge from disk and evaporate
+            // on the next launch — at least leave a trace.
+            NSLog("studio-runner: failed to save settings to %@ — %@", url.path, "\(error)")
+            return
+        }
         Self.markHasCustomIcon(at: url)
     }
 
@@ -52,9 +79,12 @@ struct ProjectSettings: Codable {
         // + fldr(2) + FXInfo(16). kHasCustomIcon = 0x0400 sits in the flags
         // word at offset 8 (big-endian).
         var info = [UInt8](repeating: 0, count: 32)
-        info[8] = 0x04
         url.withUnsafeFileSystemRepresentation { path in
             guard let path else { return }
+            // Read-modify-write: preserve any existing FinderInfo bits
+            // (e.g. a Finder label colour) instead of zeroing the blob.
+            _ = getxattr(path, "com.apple.FinderInfo", &info, info.count, 0, 0)
+            info[8] |= 0x04
             _ = setxattr(path, "com.apple.FinderInfo", info, info.count, 0, 0)
         }
     }

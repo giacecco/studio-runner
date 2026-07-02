@@ -34,6 +34,7 @@ enum MIDIError: Error {
     case portFailed(OSStatus)
     case noSources
     case cancelled
+    case learnTimeout
 }
 
 // MARK: - CoreMIDI wrapper
@@ -51,9 +52,23 @@ final class MIDIClient: @unchecked Sendable {
     private var virtualSource      = MIDIEndpointRef()  // "StudioRunner" source — Bitwig listens here
     private var virtualDestination = MIDIEndpointRef()  // "StudioRunner" destination — satisfies Bitwig's output requirement
     private var sources: [MIDIEndpointRef] = []
-    private(set) var sourceNames: [String] = []
+
+    // `sourceNames` is read on the CoreMIDI callback thread while being
+    // mutated from the main thread (openAllSources / shutdown on device
+    // change), and `currentTrackName` is written from the callback thread
+    // but read from the main actor — both need a lock.
+    private let stateLock = NSLock()
+    private var _sourceNames: [String] = []
+    var sourceNames: [String] {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _sourceNames
+    }
     /// Most recently selected Bitwig track name, pushed via SysEx F0 7D 01 … F7.
-    private(set) var currentTrackName: String? = nil
+    var currentTrackName: String? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _currentTrackName
+    }
+    private var _currentTrackName: String? = nil
 
     private let queue = DispatchQueue(label: "studio-runner.midi.dispatch")
     private var handlers: [UUID: (MIDIEvent) -> Void] = [:]
@@ -120,7 +135,9 @@ final class MIDIClient: @unchecked Sendable {
         for i in 0..<count {
             let src = MIDIGetSource(i)
             sources.append(src)
-            sourceNames.append(Self.endpointName(src))
+            stateLock.lock()
+            _sourceNames.append(Self.endpointName(src))
+            stateLock.unlock()
             // We tag each source with its 1-based index in our `sources` array so
             // the read callback can map back to a port name without re-querying.
             let refCon = UnsafeMutableRawPointer(bitPattern: i + 1)
@@ -141,7 +158,9 @@ final class MIDIClient: @unchecked Sendable {
     func shutdown() {
         for src in sources { MIDIPortDisconnectSource(inputPort, src) }
         sources.removeAll()
-        sourceNames.removeAll()
+        stateLock.lock()
+        _sourceNames.removeAll()
+        stateLock.unlock()
         queue.sync { handlers.removeAll() }
         if virtualDestination != 0 { MIDIEndpointDispose(virtualDestination); virtualDestination = 0 }
         if virtualSource != 0 { MIDIEndpointDispose(virtualSource); virtualSource = 0 }
@@ -156,21 +175,29 @@ final class MIDIClient: @unchecked Sendable {
         let idx = bitPatternRefCon - 1
         let portName = (idx >= 0 && idx < sourceNames.count) ? sourceNames[idx] : "unknown"
 
-        var packet = pktList.pointee.packet
+        // Walk the packet list in place: MIDIPacketNext computes the next
+        // packet's address relative to the current one, so it must be given
+        // pointers into the original buffer. Walking a stack copy (only the
+        // first ~268 bytes of the list) reads garbage past the first packet
+        // and truncates SysEx payloads to the 256-byte inline tuple.
+        let packetOffset = MemoryLayout<MIDIPacketList>.offset(of: \MIDIPacketList.packet)!
+        let dataOffset = MemoryLayout<MIDIPacket>.offset(of: \MIDIPacket.data)!
+        var pkt = UnsafeRawPointer(pktList).advanced(by: packetOffset)
+            .assumingMemoryBound(to: MIDIPacket.self)
         for _ in 0..<pktList.pointee.numPackets {
-            let length = Int(packet.length)
-            let bytes: [UInt8] = withUnsafeBytes(of: &packet.data) { raw in
-                let typed = raw.bindMemory(to: UInt8.self)
-                return Array(typed.prefix(length))
-            }
+            let length = Int(pkt.pointee.length)
+            let dataStart = UnsafeRawPointer(pkt).advanced(by: dataOffset)
+            let bytes = [UInt8](UnsafeRawBufferPointer(start: dataStart, count: length))
+            defer { pkt = UnsafePointer(MIDIPacketNext(pkt)) }
             // SysEx F0 7D 01 <ASCII name> F7 — track name from Bitwig.
             if bytes.first == 0xF0 {
                 if bytes.count >= 4, bytes[1] == 0x7D, bytes[2] == 0x01, bytes.last == 0xF7 {
                     let nameBytes = Array(bytes[3..<(bytes.count - 1)])
                     let name = String(bytes: nameBytes, encoding: .ascii).map { $0.isEmpty ? nil : $0 } ?? nil
-                    queue.async { self.currentTrackName = name }
+                    stateLock.lock()
+                    _currentTrackName = name
+                    stateLock.unlock()
                 }
-                packet = MIDIPacketNext(&packet).pointee
                 continue
             }
             if let evt = Self.parse(bytes: bytes, portName: portName) {
@@ -179,7 +206,6 @@ final class MIDIClient: @unchecked Sendable {
                     for h in self.handlers.values { h(evt) }
                 }
             }
-            packet = MIDIPacketNext(&packet).pointee
         }
     }
 
@@ -236,14 +262,44 @@ final class MIDIClient: @unchecked Sendable {
 func captureBinding(
     client: MIDIClient,
     excluding: [MIDIBinding],
-    deviceName: String? = nil
+    deviceName: String? = nil,
+    timeout: TimeInterval = 120
 ) async throws -> MIDIBinding {
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MIDIBinding, Error>) in
-        final class Box { var captured: MIDIBinding?; var subscription: UUID?; var done = false }
+        // `done` is decided from two threads (the MIDI queue on a matching
+        // release, the timeout task) — `finishOnce` makes exactly one of
+        // them resume the continuation.
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var done = false
+            var captured: MIDIBinding?
+            var subscription: UUID?
+            var timeoutTask: Task<Void, Never>?
+            func isDone() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                return done
+            }
+            func finishOnce() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                if done { return false }
+                done = true
+                return true
+            }
+        }
         let box = Box()
 
+        // Without a timeout the continuation can never be abandoned: if the
+        // expected device is filtered out or the user walks away, the app
+        // would be stuck in the learn state until relaunch.
+        box.timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled, box.finishOnce() else { return }
+            if let sub = box.subscription { client.unsubscribe(sub) }
+            continuation.resume(throwing: MIDIError.learnTimeout)
+        }
+
         box.subscription = client.subscribe { evt in
-            if box.done { return }
+            if box.isDone() { return }
 
             // Phase 1: wait for a press-down that's eligible.
             if box.captured == nil {
@@ -277,8 +333,8 @@ func captureBinding(
             default:
                 isMatch = false
             }
-            if isMatch {
-                box.done = true
+            if isMatch, box.finishOnce() {
+                box.timeoutTask?.cancel()
                 if let sub = box.subscription { client.unsubscribe(sub) }
                 continuation.resume(returning: cap)
             }
@@ -347,15 +403,24 @@ final class MIDIGate {
             return
         }
 
-        // Memo and ask — only active while session button is held.
-        guard sessionDown else { return }
-
+        // Memo and ask — presses arm only while the session button is held,
+        // but releases must always get through: if the producer lets go of
+        // the session button before the inner one, swallowing the up-edge
+        // would leave the recording stuck and block the next press.
         if let edge = match(evt, against: memoBinding) {
-            if edge == .down { pressInner(.memo) } else { releaseInner(.memo) }
+            if edge == .down {
+                if sessionDown { pressInner(.memo) }
+            } else {
+                releaseInner(.memo)
+            }
             return
         }
         if let edge = match(evt, against: askBinding) {
-            if edge == .down { pressInner(.ask) } else { releaseInner(.ask) }
+            if edge == .down {
+                if sessionDown { pressInner(.ask) }
+            } else {
+                releaseInner(.ask)
+            }
         }
     }
 
@@ -389,15 +454,21 @@ final class MIDIGate {
 
 /// Assembles MTC quarter-frame messages (0xF1) into a DAW timeline position
 /// string ("M:SS" or "H:MM:SS"). Updated once per full 8-message cycle
-/// (~3–7 Hz depending on frame rate). Thread-safe: all state mutations happen
-/// on MIDIClient's private serial queue, which is the same queue that fires
-/// the gate's press-down callback, so reading `position` from there is safe.
+/// (~3–7 Hz depending on frame rate). Nibble state is only touched on
+/// MIDIClient's private serial queue; `position` is lock-guarded because the
+/// Coordinator reads it from the main actor.
 final class MTCReceiver {
     /// Current DAW position as "M:SS" (or "H:MM:SS" once past the first hour).
     /// Nil until the first complete 8-message cycle has been received.
-    private(set) var position: String? = nil
+    var position: String? {
+        positionLock.lock(); defer { positionLock.unlock() }
+        return _position
+    }
+    private let positionLock = NSLock()
+    private var _position: String? = nil
 
     private var nibbles = [Int](repeating: 0, count: 8)
+    private var nextExpected = 0
     private var subscription: UUID?
     private weak var client: MIDIClient?
     private let sourceName: String?   // nil = accept from any source
@@ -423,21 +494,39 @@ final class MTCReceiver {
 
         let msgNum = (evt.data1 >> 4) & 0x07
         let nibble  =  evt.data1       & 0x0F
-        nibbles[msgNum] = nibble
 
-        // Reconstruct only after the last message in each cycle arrives so we
-        // always use a coherent, single-cycle snapshot.
+        // Only accept a contiguous 0…7 sequence: a transport locate or loop
+        // jump mid-cycle restarts the quarter-frame stream, and stitching
+        // nibbles from two different frames would publish a position that
+        // never existed (e.g. seconds from the old frame, minutes from the
+        // new one).
+        if msgNum == 0 {
+            nextExpected = 1
+            nibbles[0] = nibble
+            return
+        }
+        guard msgNum == nextExpected else {
+            nextExpected = 0
+            return
+        }
+        nibbles[msgNum] = nibble
+        nextExpected = msgNum + 1
         guard msgNum == 7 else { return }
+        nextExpected = 0
 
         let seconds = nibbles[2] | (nibbles[3] << 4)
         let minutes = nibbles[4] | (nibbles[5] << 4)
         let hours   = nibbles[6] | ((nibbles[7] & 0x01) << 4)
 
+        let formatted: String
         if hours > 0 {
-            position = String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            formatted = String(format: "%d:%02d:%02d", hours, minutes, seconds)
         } else {
-            position = String(format: "%d:%02d", minutes, seconds)
+            formatted = String(format: "%d:%02d", minutes, seconds)
         }
+        positionLock.lock()
+        _position = formatted
+        positionLock.unlock()
     }
 }
 

@@ -150,9 +150,11 @@ virtual source (channel 16) to the Bitwig controller script:
 | 115 | seconds (0–59) |
 | 114 value=127 | trigger: stop transport + jump to position |
 
-The script converts wall-clock time to beats using the current project BPM.
-This is exact for constant-tempo projects; for variable-tempo projects the
-cursor lands in the right neighbourhood but may be off by a bar or two.
+The script sets the playhead directly in wall-clock seconds (Bitwig API 17's
+`playPositionInSeconds()`/`playStartPositionInSeconds()`), so the jump is
+exact even across tempo automation. If those calls are unavailable it falls
+back to converting wall-clock time to beats using the current project BPM,
+which is exact only for constant-tempo projects.
 
 MTC must have been transmitting when the original memo was taken — if no
 `daw_pos` was recorded for a note, the AI will say so instead of guessing.
@@ -279,8 +281,8 @@ its current form would not be possible.
 
 Running outside the DAW is the architectural advantage. StudioRunner opens
 its own audio sessions independently of whatever Logic or Ableton is doing:
-`MicRecorder` uses `AVCaptureSession` on the chosen input, `DAWRecorder`
-uses `AVAudioEngine` on BlackHole. The DAW never knows StudioRunner is
+`MicRecorder` and `DAWRecorder` both use `AVCaptureSession`, on the chosen
+mic input and on BlackHole respectively. The DAW never knows StudioRunner is
 listening. CoreMIDI broadcasts to all listeners simultaneously, so the DAW
 and StudioRunner both receive the pedal press without conflict and without any
 Accessibility-permission dance that a global keyboard shortcut would need.

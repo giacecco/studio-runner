@@ -44,10 +44,21 @@ final class Coordinator {
         var utteranceDawTrack: String? = nil
     }
 
+    /// Gate events hop from the MIDI queue to the main actor through this
+    /// FIFO, so press/release pairs are processed strictly in arrival order.
+    private let gateEvents = SerialTaskQueue()
+
+
     // MARK: - Bootstrap
 
     func bootstrap() {
         Config.loadProjectSettings()
+
+        if Config.projectFileCorrupt {
+            let name = ProjectSettings.projectFileURL(root: Config.projectRoot).lastPathComponent
+            state.set(.notReady(reason: "\(name) is unreadable — fix or delete it, then reopen the project"))
+            return
+        }
 
         let settingsURL = ProjectSettings.projectFileURL(root: Config.projectRoot)
         if !FileManager.default.fileExists(atPath: settingsURL.path) {
@@ -181,12 +192,38 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
     // MARK: - Project switching
 
+    private var pendingModalOpenURL: URL?
+
     func openProjectFile(_ url: URL) {
+        // Apple Events are delivered even while a modal (project picker,
+        // open/save panel, alert) is running. Opening a project underneath
+        // it would nest a bootstrap inside the modal and let the modal's
+        // outcome run a second open/new flow on top. Defer until the modal
+        // session ends.
+        guard NSApp.modalWindow == nil else {
+            pendingModalOpenURL = url
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.retryPendingOpen()
+            }
+            return
+        }
         let root = url.deletingLastPathComponent()
         if isSessionActive { stopSessionComponents() }
         Config.setProjectRoot(root)
         RecentProjects.note(url)
         bootstrap()
+    }
+
+    private func retryPendingOpen() {
+        guard let url = pendingModalOpenURL else { return }
+        guard NSApp.modalWindow == nil else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.retryPendingOpen()
+            }
+            return
+        }
+        pendingModalOpenURL = nil
+        openProjectFile(url)
     }
 
     // MARK: - MIDI lifecycle (permanent)
@@ -196,6 +233,16 @@ few minutes on a fast connection. Progress is shown in the menu bar.
     }
 
     private func _startMidi() async {
+        // Re-bootstrap (project switch, API-key retry): tear down any live
+        // MIDI stack first. A second MIDIClient would create duplicate
+        // virtual "StudioRunner" endpoints (which the DAW script may latch
+        // onto) and leak the old CoreMIDI client, port and endpoints —
+        // MIDIClient has no deinit, so shutdown() is the only disposal path.
+        if isSessionActive { stopSessionComponents() }
+        gate?.stop(); gate = nil
+        mtcReceiver?.stop(); mtcReceiver = nil
+        midi?.shutdown(); midi = nil
+
         let client: MIDIClient
         do {
             client = try MIDIClient()
@@ -212,7 +259,8 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             pair = saved
         } else {
             guard let learned = await learnBindings(client: client) else {
-                state.set(.idle)
+                // learnBindings has already set .error — stamping .idle over
+                // it would show a "ready" icon with no working buttons.
                 return
             }
             pair = learned
@@ -226,57 +274,75 @@ few minutes on a fast connection. Progress is shown in the menu bar.
 
     private func setupGate(client: MIDIClient, pair: MIDIBindingsStore.Pair) {
         guard let sessionBinding = pair.session else { return }
-        let cursors = self.cursors
-        let mtcRecv = self.mtcReceiver
-        let midiClient = self.midi
 
         let g = MIDIGate(client: client, session: sessionBinding, memo: pair.memo, ask: pair.ask)
-        g.onPressDown = { [stateStore = state, weak self] which in
+        // The gate fires on the MIDI dispatch queue. Only the timestamp is
+        // taken there; everything else hops to the main actor through the
+        // FIFO queue, so Coordinator state (midi, mtcReceiver, utteranceFlow,
+        // cursors) is never touched off its actor and a press/release pair
+        // can never be processed out of order.
+        g.onPressDown = { [gateEvents, weak self] which in
             let now = Date().timeIntervalSince1970 * 1000
-            switch which {
-            case .session:
-                self?.midi?.signalSessionArmed(true)
-                Task { await self?._startSessionComponents() }
-            case .memo:
-                cursors.utteranceStart = now
-                cursors.utteranceDawPosition = mtcRecv?.position
-                cursors.utteranceDawTrack = midiClient?.currentTrackName
-                stateStore.setFromAnyThread(.recordingMemo)
-                // Pressing while the assistant is speaking cuts it off — the
-                // producer's voice takes priority, and the less TTS the mic
-                // ring picks up, the cleaner the new transcription.
-                Task { @MainActor in self?.speaker.stop() }
-                DispatchQueue.main.async { soundMemo?.volume = Config.ttsVolume ?? 1.0; soundMemo?.play() }
-            case .ask:
-                cursors.utteranceStart = now
-                cursors.utteranceDawPosition = mtcRecv?.position
-                cursors.utteranceDawTrack = midiClient?.currentTrackName
-                stateStore.setFromAnyThread(.recordingAsk)
-                Task { @MainActor in self?.speaker.stop() }
-                DispatchQueue.main.async { soundAsk?.volume = Config.ttsVolume ?? 1.0; soundAsk?.play() }
+            gateEvents.enqueue { @MainActor in
+                await self?.handleGatePressDown(which, at: now)
             }
         }
-        g.onPressUp = { [weak self] which in
+        g.onPressUp = { [gateEvents, weak self] which in
             let now = Date().timeIntervalSince1970 * 1000
-            switch which {
-            case .session:
-                self?.midi?.signalSessionArmed(false)
-                Task { @MainActor in self?.stopSessionComponents() }
-            case .memo, .ask:
-                DispatchQueue.main.async {
-                    let snd = which == .memo ? soundMemoUp : soundAskUp
-                    snd?.volume = Config.ttsVolume ?? 1.0
-                    snd?.play()
-                }
-                let s = cursors.utteranceStart
-                let pos = cursors.utteranceDawPosition
-                let track = cursors.utteranceDawTrack
-                let force = which == .ask
-                Task { await self?.utteranceFlow?.handle(startMs: s, endMs: now, dawPosition: pos, dawTrack: track, forceAnswer: force) }
+            gateEvents.enqueue { @MainActor in
+                self?.handleGatePressUp(which, at: now)
             }
         }
         g.start()
         self.gate = g
+    }
+
+    private func handleGatePressDown(_ which: MIDIGate.Which, at now: Double) async {
+        switch which {
+        case .session:
+            midi?.signalSessionArmed(true)
+            await _startSessionComponents()
+        case .memo:
+            cursors.utteranceStart = now
+            cursors.utteranceDawPosition = mtcReceiver?.position
+            cursors.utteranceDawTrack = midi?.currentTrackName
+            state.set(.recordingMemo)
+            // Pressing while the assistant is speaking cuts it off — the
+            // producer's voice takes priority, and the less TTS the mic
+            // ring picks up, the cleaner the new transcription.
+            speaker.stop()
+            soundMemo?.volume = Config.ttsVolume ?? 1.0
+            soundMemo?.play()
+        case .ask:
+            cursors.utteranceStart = now
+            cursors.utteranceDawPosition = mtcReceiver?.position
+            cursors.utteranceDawTrack = midi?.currentTrackName
+            state.set(.recordingAsk)
+            speaker.stop()
+            soundAsk?.volume = Config.ttsVolume ?? 1.0
+            soundAsk?.play()
+        }
+    }
+
+    private func handleGatePressUp(_ which: MIDIGate.Which, at now: Double) {
+        switch which {
+        case .session:
+            midi?.signalSessionArmed(false)
+            stopSessionComponents()
+        case .memo, .ask:
+            let snd = which == .memo ? soundMemoUp : soundAskUp
+            snd?.volume = Config.ttsVolume ?? 1.0
+            snd?.play()
+            let s = cursors.utteranceStart
+            let pos = cursors.utteranceDawPosition
+            let track = cursors.utteranceDawTrack
+            let force = which == .ask
+            // The pipeline is deliberately NOT run on the gate queue: it
+            // spans transcription, AI and TTS, and further presses must be
+            // able to land (and interrupt TTS) while it runs.
+            let flow = utteranceFlow
+            Task { await flow?.handle(startMs: s, endMs: now, dawPosition: pos, dawTrack: track, forceAnswer: force) }
+        }
     }
 
     // MARK: - Session components
@@ -295,8 +361,11 @@ few minutes on a fast connection. Progress is shown in the menu bar.
         }
         let micRec: MicRecorder
         do {
-            micRec = try MicRecorder(gainDb: Config.micGainDb, deviceID: micDevID)
-            try micRec.start()
+            let rec = try MicRecorder(gainDb: Config.micGainDb, deviceID: micDevID)
+            // startRunning() is a documented blocking call — run it off the
+            // main thread so the app doesn't beachball on a slow device grab.
+            try await Task.detached { try rec.start() }.value
+            micRec = rec
         } catch {
             log("mic start failed: \(error)")
             state.set(.error("Mic: \(error.localizedDescription)"))
@@ -308,7 +377,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
            let dawID = CoreAudioDevice.findInputDevice(named: Config.dawDeviceName) {
             do {
                 let rec = try DAWRecorder(deviceID: dawID)
-                try rec.start()
+                try await Task.detached { try rec.start() }.value
                 self.daw = rec
             } catch {
                 log("DAW capture unavailable (\(error.localizedDescription)) — continuing mic-only")
@@ -318,8 +387,8 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             self.daw = nil
         }
 
-        let onStateBg: @Sendable (SessionState) -> Void = { [stateStore = state] s in
-            stateStore.setFromAnyThread(s)
+        let onStateBg: @Sendable (SessionState, [SessionState]) -> Void = { [stateStore = state] s, onlyIfCurrentIn in
+            stateStore.setFromAnyThread(s, onlyIfCurrentIn: onlyIfCurrentIn)
         }
         let onLogBg: @Sendable (String) -> Void = { [weak self] msg in
             Task { @MainActor in self?.log(msg) }
@@ -380,10 +449,15 @@ few minutes on a fast connection. Progress is shown in the menu bar.
     }
 
     private func injectWorkTimeSection() {
-        guard let notes = try? String(contentsOf: Config.notesFile, encoding: .utf8),
-              !notes.isEmpty else { return }
-        let updated = WorkTimeLog.inject(into: notes, log: workTimeLog)
-        try? updated.write(to: Config.notesFile, atomically: true, encoding: .utf8)
+        // Value copy: the transaction runs later, and must inject the log as
+        // it was when the injection was requested.
+        let logCopy = workTimeLog
+        NotesFile.queue.enqueue {
+            guard let notes = try? String(contentsOf: Config.notesFile, encoding: .utf8),
+                  !notes.isEmpty else { return }
+            let updated = WorkTimeLog.inject(into: notes, log: logCopy)
+            try? updated.write(to: Config.notesFile, atomically: true, encoding: .utf8)
+        }
     }
 
     /// Today's accumulated arm time: previous disarms this day plus the running
@@ -546,6 +620,15 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             }
         }
 
+        // The TODO strip and the timeline collapse form one exclusive
+        // notes-file transaction: a consolidation racing in between could
+        // otherwise be silently overwritten by the collapse's stale snapshot.
+        NotesFile.queue.enqueue { @MainActor [weak self] in
+            await self?.clearNotesExclusively(logSuffix: logSuffix)
+        }
+    }
+
+    private func clearNotesExclusively(logSuffix: String) async {
         guard let content = try? String(contentsOf: Config.notesFile, encoding: .utf8) else { return }
         var lines = content.components(separatedBy: "\n")
         if let todoIdx = lines.firstIndex(where: { $0 == "## TODO" }) {
@@ -565,7 +648,7 @@ few minutes on a fast connection. Progress is shown in the menu bar.
             log("clear session: write failed — \(error)")
             return
         }
-        Task { await self.collapseTimelineAfterClear() }
+        await collapseTimelineAfterClear()
     }
 
     private static let timelineCollapsePrompt = """

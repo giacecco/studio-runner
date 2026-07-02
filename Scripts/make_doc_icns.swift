@@ -93,6 +93,14 @@ convert.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
 convert.arguments = ["-c", "icns", stagingSet.path, "-o", appIcns.path]
 try! convert.run()
 convert.waitUntilExit()
+guard convert.terminationStatus == 0 else {
+    // Without this check a failed iconutil would silently ship a stale
+    // StudioRunner.icns (or trap on the copy below on a clean checkout).
+    FileManager.default.fileExists(atPath: appIcns.path)
+        ? print("ERROR: iconutil failed (status \(convert.terminationStatus)); \(appIcns.lastPathComponent) NOT regenerated")
+        : print("ERROR: iconutil failed (status \(convert.terminationStatus)); no icns produced")
+    exit(1)
+}
 
 try? FileManager.default.removeItem(at: docIcns)
 try! FileManager.default.copyItem(at: appIcns, to: docIcns)

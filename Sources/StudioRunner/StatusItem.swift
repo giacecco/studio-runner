@@ -31,6 +31,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func configureMenu() {
         menu.delegate = self
+        // Without this, NSMenu's automatic validation re-enables every item
+        // whose target responds to its action, overriding the hasProject
+        // logic in menuWillOpen.
+        menu.autoenablesItems = false
 
         statusRow.isEnabled = false
         menu.addItem(statusRow)

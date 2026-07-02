@@ -60,8 +60,17 @@ final class MicRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate 
         output.setSampleBufferDelegate(self, queue: captureQueue)
 
         session.beginConfiguration()
-        if session.canAddInput(input) { session.addInput(input) }
-        if session.canAddOutput(output) { session.addOutput(output) }
+        // A refused add must throw: the session would otherwise "start"
+        // healthy while delivering zero sample buffers, and every memo
+        // would silently capture nothing.
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw NSError(domain: "StudioRunner", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "AVCaptureSession refused mic input/output (device busy?)"])
+        }
+        session.addInput(input)
+        session.addOutput(output)
         session.commitConfiguration()
         session.startRunning()
 
@@ -112,25 +121,34 @@ final class MicRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate 
                                              frameCapacity: outCapacity) else { return }
         var consumed = false
         var nsErr: NSError?
-        let status = conv.convert(to: outBuf, error: &nsErr) { _, outStatus in
-            if consumed { outStatus.pointee = .noDataNow; return nil }
-            consumed = true; outStatus.pointee = .haveData
-            return inputBuf
-        }
-        if status == .error { return }
-        let frames = Int(outBuf.frameLength)
-        if frames == 0 { return }
-
-        // Apply gain and append interleaved Int16 bytes to the ring buffer.
-        let mb = outBuf.audioBufferList.pointee.mBuffers
-        guard let basePtr = mb.mData else { return }
-        let int16Ptr = basePtr.assumingMemoryBound(to: Int16.self)
         let g = gainFactor
-        for i in 0..<frames {
-            let s = Float(int16Ptr[i]) * g
-            int16Ptr[i] = Int16(max(-32768, min(32767, Int(s))))
+        // Loop until the converter reports end-of-stream: signalling
+        // .endOfStream (not .noDataNow) after the chunk makes the converter
+        // flush its resampler tail, which the per-chunk-converter workaround
+        // would otherwise drop at every chunk seam — leaving the ring
+        // measurably short of wall-clock audio.
+        while true {
+            outBuf.frameLength = 0
+            let status = conv.convert(to: outBuf, error: &nsErr) { _, outStatus in
+                if consumed { outStatus.pointee = .endOfStream; return nil }
+                consumed = true; outStatus.pointee = .haveData
+                return inputBuf
+            }
+            if status == .error { return }
+            let frames = Int(outBuf.frameLength)
+            if frames > 0 {
+                // Apply gain and append interleaved Int16 bytes to the ring.
+                let mb = outBuf.audioBufferList.pointee.mBuffers
+                guard let basePtr = mb.mData else { return }
+                let int16Ptr = basePtr.assumingMemoryBound(to: Int16.self)
+                for i in 0..<frames {
+                    let s = Float(int16Ptr[i]) * g
+                    int16Ptr[i] = Int16(max(-32768, min(32767, Int(s))))
+                }
+                buffer.append(UnsafeRawBufferPointer(start: basePtr, count: frames * 2))
+            }
+            if status == .endOfStream || frames == 0 { return }
         }
-        buffer.append(UnsafeRawBufferPointer(start: basePtr, count: frames * 2))
     }
 
     // MARK: - Device mapping

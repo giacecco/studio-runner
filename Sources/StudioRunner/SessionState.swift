@@ -75,4 +75,15 @@ final class SessionStateStore {
     nonisolated func setFromAnyThread(_ newState: SessionState) {
         Task { @MainActor in self.set(newState) }
     }
+
+    /// Conditional variant: applies only while the current state is one of
+    /// `expected` (empty = unconditional). Lets a finishing worker release
+    /// the icon without stomping a newer activity's state — e.g. a
+    /// consolidation ending while an answer is being spoken.
+    nonisolated func setFromAnyThread(_ newState: SessionState, onlyIfCurrentIn expected: [SessionState]) {
+        Task { @MainActor in
+            guard expected.isEmpty || expected.contains(self.state) else { return }
+            self.set(newState)
+        }
+    }
 }

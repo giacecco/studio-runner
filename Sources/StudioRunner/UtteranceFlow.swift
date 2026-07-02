@@ -10,23 +10,26 @@ import Foundation
 ///   4. Extract the DAW clip (if the loopback device is present)
 ///   5. Append a memos.md entry — always, BEFORE any AI call, so a crash or
 ///      network failure can never lose a note
-///   6. If the utterance is addressed to the assistant — wake word
-///      (`Config.wakeWord`) in the transcript, or the answer button was used —
-///      call the AI with the session state, append the exchange to chat.md,
-///      log the spoken answer into memos.md with assistant attribution (so
-///      consolidation can resolve open questions from it), speak the reply,
-///      and execute any [PLAY:] / [SHOW:] / [GOTO:] / [CLEAR_SESSION] tags
+///   6. If the answer button was used, call the AI with the session state,
+///      append the exchange to chat.md, log the spoken answer into memos.md
+///      with assistant attribution (so consolidation can resolve open
+///      questions from it), speak the reply, and execute any
+///      [PLAY:] / [SHOW:] / [GOTO:] / [CLEAR_SESSION] tags
 ///   7. Signal the consolidator
 ///
-/// A silent tap on the answer button (press + release with no speech) is the
-/// rescue path for a missed wake word: it answers the most recent utterance,
-/// or re-speaks the last answer if that utterance was already answered.
+/// A silent tap on the answer button (press + release with no speech)
+/// answers the most recent utterance if it went unanswered, or re-speaks
+/// the last answer. (Wake-word triggering on the talk button was dropped;
+/// `Config.wakeWord` is retained only as the assistant's spoken name.)
 actor UtteranceFlow {
     private let micBuffer: RollingBuffer
     private let dawBuffer: RollingBuffer?
     private let speaker: Speaker
 
-    private let onState: (SessionState) -> Void
+    /// (newState, onlyIfCurrentIn) — the second argument guards resets: an
+    /// empty list applies unconditionally, otherwise the state is only set
+    /// while the store currently holds one of the listed states.
+    private let onState: (SessionState, [SessionState]) -> Void
     private let onConsolidate: () -> Void
     private let onLog: (String) -> Void
     private let onClearSession: (@Sendable () -> Void)?
@@ -42,7 +45,7 @@ actor UtteranceFlow {
         mic: RollingBuffer,
         daw: RollingBuffer?,
         speaker: Speaker,
-        onState: @escaping (SessionState) -> Void,
+        onState: @escaping (SessionState, [SessionState]) -> Void,
         onConsolidate: @escaping () -> Void,
         onLog: @escaping (String) -> Void,
         onClearSession: (@Sendable () -> Void)? = nil,
@@ -96,9 +99,12 @@ actor UtteranceFlow {
             // CC 119 un-ducks the Bitwig side after an answer cycle; harmless
             // when nothing was ducked, so err on the side of sending it.
             if forceAnswer || answered { onAnswerDone?() }
-            onState(.idle)
+            // Release the icon only if it still shows one of our pipeline
+            // states — a newer press (recording) or the consolidator may
+            // own it by now.
+            onState(.idle, [.processingMemo, .askThinking, .askSpeaking])
         }
-        onState(.processingMemo)
+        onState(.processingMemo, [])
 
         // Mic extract: preroll on the head, postroll on the tail.
         let micStart = startMs - Config.micPrerollSec * 1000
@@ -170,12 +176,28 @@ actor UtteranceFlow {
         }
 
         let ts = Timestamps.compact(Date(timeIntervalSince1970: startMs / 1000))
-        let screenshotRel = "\(Config.runnerDirName)/screenshots/\(ts).png"
-        let audioRel = "\(Config.runnerDirName)/audio/\(ts).wav"
-        let screenshotAbs = Config.screenshotsDir.appendingPathComponent("\(ts).png")
-        let audioAbs = Config.audioDir.appendingPathComponent("\(ts).wav")
+        // Uniquify the asset stem: the DST fall-back hour repeats compact
+        // timestamps, and an overwrite would silently destroy the earlier
+        // entry's screenshot/clip. The entry header keeps the plain ts.
+        var stem = ts
+        var n = 2
+        while FileManager.default.fileExists(atPath: Config.screenshotsDir.appendingPathComponent("\(stem).png").path)
+           || FileManager.default.fileExists(atPath: Config.audioDir.appendingPathComponent("\(stem).wav").path) {
+            stem = "\(ts)-\(n)"
+            n += 1
+        }
+        let screenshotRel = "\(Config.runnerDirName)/screenshots/\(stem).png"
+        let audioRel = "\(Config.runnerDirName)/audio/\(stem).wav"
+        let screenshotAbs = Config.screenshotsDir.appendingPathComponent("\(stem).png")
+        let audioAbs = Config.audioDir.appendingPathComponent("\(stem).wav")
 
-        try? await Screenshot.capture(to: screenshotAbs)
+        var hasScreenshot = false
+        do {
+            try await Screenshot.capture(to: screenshotAbs)
+            hasScreenshot = true
+        } catch {
+            onLog("utterance: screenshot failed — \(error)")
+        }
 
         // DAW clip — bounded preroll, no postroll (music after the utterance
         // belongs to the next entry).
@@ -219,7 +241,7 @@ actor UtteranceFlow {
                 text: text,
                 dawPosition: fullDawPos,
                 audioRel: hasDaw ? audioRel : nil,
-                screenshotRel: screenshotRel
+                screenshotRel: hasScreenshot ? screenshotRel : nil
             ))
         } catch {
             onLog("utterance: memos.md append failed — \(error)")
@@ -243,7 +265,7 @@ actor UtteranceFlow {
     /// Returns true if anything was answered or spoken.
     private func handleSilentTap() async -> Bool {
         if let answer = lastAnswer {
-            onState(.askSpeaking)
+            onState(.askSpeaking, [])
             await speaker.speak(answer)
             return true
         }
@@ -258,7 +280,7 @@ actor UtteranceFlow {
     }
 
     private func answer(question: String) async {
-        onState(.askThinking)
+        onState(.askThinking, [])
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
         let recent = (try? MemoStream.unprocessedFormatted()) ?? ""
         let user = """
@@ -276,12 +298,18 @@ actor UtteranceFlow {
             answer = try await AIClient.call(systemPrompt: Self.answerSystemPrompt, userPrompt: user)
         } catch {
             onLog("utterance: AI call failed — \(error)")
+            // Un-latch duplicate suppression: the producer's natural next
+            // move is to repeat the exact question, which must not be
+            // silently dropped as a duplicate transcript.
+            lastText = ""
             return
         }
         onLog("A: \(answer)")
         let actions = Self.mediaActions(from: answer)
         let spokenText = Self.stripMediaTags(from: answer)
-        appendChat(question: question, answer: spokenText)
+        // chat.md keeps the verbatim exchange, action tags included — it is
+        // the audit trail of which clip was played / position jumped to.
+        appendChat(question: question, answer: answer)
 
         // Log the answer into the memo stream with assistant attribution so
         // the consolidator can resolve open questions from it.
@@ -299,7 +327,7 @@ actor UtteranceFlow {
         let textToSpeak = spokenText.isEmpty && !actions.isEmpty ? "OK" : spokenText
         lastAnswer = textToSpeak.isEmpty ? nil : textToSpeak
         if !textToSpeak.isEmpty {
-            onState(.askSpeaking)
+            onState(.askSpeaking, [])
             await speaker.speak(textToSpeak)
         }
 

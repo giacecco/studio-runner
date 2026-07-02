@@ -12,9 +12,36 @@ final class WhisperModelDownloader: NSObject, URLSessionDownloadDelegate, @unche
 
     private static let baseURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
 
-    // Mutated only on the URLSession delegate queue.
+    // `continuation` is installed on the caller's task thread and consumed
+    // on the URLSession delegate queue — both go through `stateLock`, and
+    // `install`/`take` guarantee a single live continuation (a concurrent
+    // second download is rejected rather than silently leaking the first
+    // caller's continuation).
+    private let stateLock = NSLock()
     private var continuation: CheckedContinuation<URL, Error>?
     private var onProgress: ((Double) -> Void)?
+
+    private func install(_ cont: CheckedContinuation<URL, Error>,
+                         progress: @escaping (Double) -> Void) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard continuation == nil else { return false }
+        continuation = cont
+        onProgress = progress
+        return true
+    }
+
+    private func take() -> CheckedContinuation<URL, Error>? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let cont = continuation
+        continuation = nil
+        onProgress = nil
+        return cont
+    }
+
+    private func progressCallback() -> ((Double) -> Void)? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return onProgress
+    }
 
     /// Downloads `Config.whisperModel` if it doesn't already exist on disk.
     /// `progress` is invoked with values in 0…1 on an arbitrary thread.
@@ -33,10 +60,7 @@ final class WhisperModelDownloader: NSObject, URLSessionDownloadDelegate, @unche
                           userInfo: [NSLocalizedDescriptionKey: "Invalid model URL for \(dest.lastPathComponent)"])
         }
 
-        self.onProgress = progress
-        defer { self.onProgress = nil }
-
-        let tmp = try await runDownload(from: remote)
+        let tmp = try await runDownload(from: remote, progress: progress)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         // Move into place atomically — if a previous half-written file
@@ -50,11 +74,18 @@ final class WhisperModelDownloader: NSObject, URLSessionDownloadDelegate, @unche
         try FileManager.default.moveItem(at: staging, to: dest)
     }
 
-    private func runDownload(from remote: URL) async throws -> URL {
+    private func runDownload(from remote: URL,
+                             progress: @escaping (Double) -> Void) async throws -> URL {
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         return try await withCheckedThrowingContinuation { cont in
-            self.continuation = cont
+            guard install(cont, progress: progress) else {
+                cont.resume(throwing: NSError(
+                    domain: "WhisperModel", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "A model download is already in progress"]))
+                return
+            }
             session.downloadTask(with: remote).resume()
         }
     }
@@ -67,8 +98,18 @@ final class WhisperModelDownloader: NSObject, URLSessionDownloadDelegate, @unche
         // synchronously to a temp file under our control.
         let parking = FileManager.default.temporaryDirectory
             .appendingPathComponent("studiorunner-whisper-\(UUID().uuidString).bin")
-        let cont = continuation
-        continuation = nil
+        let cont = take()
+        // A completed transfer is not a successful download: a 404/503 body
+        // would otherwise be installed as the model file and, because the
+        // fileExists check short-circuits future downloads, never replaced.
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200...299).contains(http.statusCode) {
+            cont?.resume(throwing: NSError(
+                domain: "WhisperModel", code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Model download failed: HTTP \(http.statusCode)"]))
+            return
+        }
         do {
             try FileManager.default.moveItem(at: location, to: parking)
             cont?.resume(returning: parking)
@@ -82,15 +123,14 @@ final class WhisperModelDownloader: NSObject, URLSessionDownloadDelegate, @unche
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        progressCallback()?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     didCompleteWithError error: Error?) {
         // Success is already handled by didFinishDownloadingTo; only
         // surface explicit failures here.
-        guard let error = error, let cont = continuation else { return }
-        continuation = nil
+        guard let error = error, let cont = take() else { return }
         cont.resume(throwing: error)
     }
 }

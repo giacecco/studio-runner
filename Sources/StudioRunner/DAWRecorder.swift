@@ -18,6 +18,7 @@ final class DAWRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate 
     private let captureQueue = DispatchQueue(label: "studio.runner.daw.capture", qos: .userInitiated)
     private let coreAudioDeviceID: AudioDeviceID
     private var firstBuffer = true
+    private var warnedNonFloat = false
 
     private(set) var isRunning = false
 
@@ -50,11 +51,28 @@ final class DAWRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate 
 
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureAudioDataOutput()
+        // Pin the delivered format to Float32 PCM: the tap's Float32→Int16
+        // conversion depends on floatChannelData, and an OS/device that
+        // delivered integer PCM would otherwise silently kill DAW capture.
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false
+        ]
         output.setSampleBufferDelegate(self, queue: captureQueue)
 
         session.beginConfiguration()
-        if session.canAddInput(input)  { session.addInput(input) }
-        if session.canAddOutput(output) { session.addOutput(output) }
+        // A refused add must throw rather than "start" a session that
+        // delivers zero sample buffers (silent DAW clips with no warning).
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw NSError(domain: "StudioRunner", code: 13,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "DAW AVCaptureSession refused input/output (device busy?)"])
+        }
+        session.addInput(input)
+        session.addOutput(output)
         session.commitConfiguration()
         session.startRunning()
 
@@ -106,7 +124,13 @@ final class DAWRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate 
         // Manual Float32 → Int16 interleaved.
         // Handles both interleaved and non-interleaved source layouts.
         // If input is mono, duplicates to all output channels.
-        guard let floatData = inputBuf.floatChannelData else { return }
+        guard let floatData = inputBuf.floatChannelData else {
+            if !warnedNonFloat {
+                warnedNonFloat = true
+                NSLog("studio-runner: DAWRecorder dropping buffers — capture format is not Float32 PCM")
+            }
+            return
+        }
         var out = [Int16](repeating: 0, count: frameCount * outChannels)
         if inFmt.isInterleaved {
             // floatData[0] = [ch0_f0, ch1_f0, ch0_f1, ch1_f1, …]

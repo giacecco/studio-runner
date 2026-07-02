@@ -53,13 +53,28 @@ enum Config {
     ///      (written on every save; seeds brand-new projects).
     ///
     /// Returns `true` when the settings file already existed in the project folder.
+    /// True when the current project's `.studiorunner` file exists but can't
+    /// be decoded. While set, `saveSettings()` refuses to write, so the
+    /// user's file is never clobbered with fallback values.
+    private(set) static var projectFileCorrupt = false
+
     @discardableResult
     static func loadProjectSettings() -> Bool {
         let fileURL = ProjectSettings.projectFileURL(root: projectRoot)
-        if let loaded = ProjectSettings.load(from: fileURL) {
+        switch ProjectSettings.loadOutcome(from: fileURL) {
+        case .loaded(let loaded):
+            projectFileCorrupt = false
             settings = loaded
             backfillDefaultsIfNeeded()
             return true
+        case .corrupt(let error):
+            projectFileCorrupt = true
+            settings = ProjectSettings()
+            NSLog("studio-runner: project file %@ is unreadable (%@) — refusing to overwrite it",
+                  fileURL.path, "\(error)")
+            return false
+        case .missing:
+            projectFileCorrupt = false
         }
         if let fallbackURL = ProjectSettings.globalFallbackURL,
            let fallback = ProjectSettings.load(from: fallbackURL) {
@@ -95,6 +110,10 @@ enum Config {
     }
 
     static func saveSettings() {
+        guard !projectFileCorrupt else {
+            NSLog("studio-runner: not saving settings — the project file is corrupt; fix or delete it and reopen the project")
+            return
+        }
         settings.save(to: ProjectSettings.projectFileURL(root: projectRoot))
         if let url = ProjectSettings.globalFallbackURL {
             let dir = url.deletingLastPathComponent()

@@ -103,7 +103,16 @@ enum MemoStream {
         let screenshotRel: String?
     }
 
+    /// Serialises all mutations of memos.md. `append` (FileHandle append,
+    /// utterance actor) races the read–modify–atomic-rewrite in
+    /// `advanceWatermark` / `prune` (consolidator actor): an append landing
+    /// inside the read→write window is silently discarded when the rewrite
+    /// replaces the file.
+    private static let fileLock = NSLock()
+
     static func append(_ entry: NewEntry) throws {
+        fileLock.lock()
+        defer { fileLock.unlock() }
         try Layout.ensure()
         let human = humanise(timestamp: entry.timestamp)
         var lines: [String] = ["", "## \(human)"]
@@ -134,10 +143,34 @@ enum MemoStream {
 
     // MARK: - Watermark
 
-    static func advanceWatermark(to newWatermark: String) throws {
+    /// Advance the watermark to the largest timestamp W such that every entry
+    /// after the old watermark with timestamp ≤ W was part of this
+    /// consolidation pass. Timestamps are press-start based with one-second
+    /// resolution, so an entry appended *during* the pass can carry a
+    /// timestamp at or before the pass's maximum — a plain max() watermark
+    /// would mark it consolidated (and prune it) without it ever being
+    /// processed. Stopping below the first uncovered entry leaves it for the
+    /// next pass; the covered entries beyond it may be re-fed once, which
+    /// the consolidation prompt merges idempotently.
+    static func advanceWatermark(covering consolidated: [String]) throws {
+        fileLock.lock()
+        defer { fileLock.unlock() }
         let content = (try? String(contentsOf: Config.memosFile, encoding: .utf8)) ?? ""
+        let snap = parse(content)
+        let consolidatedSet = Set(consolidated)
+        let pending = (snap.watermark == "none"
+            ? snap.entries
+            : snap.entries.filter { $0.human > snap.watermark })
+            .sorted { $0.human < $1.human }
+        var newWatermark: String?
+        for entry in pending {
+            guard consolidatedSet.contains(entry.human) else { break }
+            newWatermark = entry.human
+        }
+        guard let target = newWatermark else { return }
+
         var lines = content.components(separatedBy: "\n")
-        let header = "<!-- consolidated_through: \(newWatermark) -->"
+        let header = "<!-- consolidated_through: \(target) -->"
         if let first = lines.first, first.hasPrefix("<!-- consolidated_through:") {
             lines[0] = header
         } else {
@@ -152,6 +185,8 @@ enum MemoStream {
     /// Drop entries whose heading timestamp is at or before the current watermark.
     @discardableResult
     static func prune() throws -> Int {
+        fileLock.lock()
+        defer { fileLock.unlock() }
         let content = (try? String(contentsOf: Config.memosFile, encoding: .utf8)) ?? ""
         let snap = parse(content)
         if snap.watermark == "none" { return 0 }

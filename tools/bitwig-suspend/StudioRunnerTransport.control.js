@@ -22,6 +22,7 @@ var isArmed         = false; // true while StudioRunner session button is held
 var currentPos      = 0;
 var pausedAt        = 0;
 var awaitingAskDone = false;
+var suspended       = false; // transport/mute latched by an in-flight press cycle
 var hasSignalPort   = false;
 var pendingMinutes  = 0;
 var pendingSeconds  = 0;
@@ -49,7 +50,8 @@ function init() {
 function sendTrackName(name) {
   var hex = "F07D01";
   for (var i = 0; i < name.length && i < 50; i++) {
-    var code = name.charCodeAt(i) & 0x7F;
+    var code = name.charCodeAt(i);
+    if (code < 0x20 || code > 0x7E) continue; // skip non-ASCII rather than mangle it
     hex += (code < 16 ? "0" : "") + code.toString(16).toUpperCase();
   }
   hex += "F7";
@@ -66,14 +68,23 @@ function onMidiGrid(status, data1, data2) {
   if (!isArmed) return;
 
   if (isPressed) {
-    wasPlaying = isPlaying;
-    if (isPlaying) {
-      pausedAt = currentPos;
-      transport.playStartPosition().set(pausedAt);
-      transport.stop();
+    // Only latch on the first press of a cycle: a press that interrupts an
+    // in-flight ask (or a controller repeating CC values while held) must
+    // not overwrite wasPlaying/wasMuted with the already-stopped/muted
+    // state — that would leave the master permanently muted.
+    if (!suspended) {
+      wasPlaying = isPlaying;
+      if (isPlaying) {
+        pausedAt = currentPos;
+        transport.playStartPosition().set(pausedAt);
+        transport.stop();
+      }
+      wasMuted = isMuted;
+      if (!wasMuted) masterTrack.mute().set(true);
+      suspended = true;
     }
-    wasMuted = isMuted;
-    if (!wasMuted) masterTrack.mute().set(true);
+    // The newest press owns the resume path; a stale ask-done signal is
+    // ignored by onMidiStudioRunner once this flips to false.
     awaitingAskDone = (data1 === 45) && hasSignalPort;
   }
 
@@ -86,6 +97,7 @@ function onMidiGrid(status, data1, data2) {
       }
       if (!wasMuted) masterTrack.mute().set(false);
       wasMuted = false;
+      suspended = false;
     }
     // Ask: resume and un-mute are handled by onMidiStudioRunner when done signal arrives
   }
@@ -108,21 +120,33 @@ function onMidiStudioRunner(status, data1, data2) {
   if (data1 === 115) { pendingSeconds = data2; return; }
   if (data1 === 114 && data2 === 127) {
     var totalSeconds = pendingMinutes * 60 + pendingSeconds;
-    var beats = totalSeconds * currentBpm / 60.0;
     if (isPlaying) { transport.stop(); }
-    transport.playStartPosition().set(beats);
+    try {
+      // Seconds-based setters follow tempo automation exactly. Both are
+      // needed: playPosition moves the visible playhead immediately,
+      // playStartPosition marks where the next play begins.
+      transport.playPositionInSeconds().set(totalSeconds);
+      transport.playStartPositionInSeconds().set(totalSeconds);
+    } catch (e) {
+      // Fallback assumes constant tempo — off target when the project has
+      // tempo automation before the requested position.
+      var beats = totalSeconds * currentBpm / 60.0;
+      transport.playPosition().set(beats);
+      transport.playStartPosition().set(beats);
+    }
     return;
   }
 
-  // Ask flow done
+  // Ask flow done. A stale done signal (the ask was interrupted by a newer
+  // press that now owns the resume) must not touch the latched state.
   if (data1 !== 119 || data2 !== 127) return;
-  if (awaitingAskDone) {
-    if (wasPlaying) {
-      host.scheduleTask(function() { transport.play(); }, null, 1000);
-    }
-    if (!wasMuted) masterTrack.mute().set(false);
-  }
+  if (!awaitingAskDone) return;
   awaitingAskDone = false;
+  suspended = false;
+  if (wasPlaying) {
+    host.scheduleTask(function() { transport.play(); }, null, 1000);
+  }
+  if (!wasMuted) masterTrack.mute().set(false);
   wasPlaying = false;
   wasMuted = false;
 }

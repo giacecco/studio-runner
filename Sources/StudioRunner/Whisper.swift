@@ -19,15 +19,17 @@ enum Whisper {
             "-f", wavURL.path
         ]
         let outPipe = Pipe()
-        let errPipe = Pipe()
         process.standardOutput = outPipe
-        process.standardError = errPipe
+        // stderr is never used; discard it so a chatty whisper build can't
+        // fill the pipe and deadlock the child.
+        process.standardError = FileHandle.nullDevice
 
         try process.run()
+        // Drain stdout BEFORE waiting: waitUntilExit() first would deadlock
+        // once the child fills the ~64 KB pipe buffer.
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        try? errPipe.fileHandleForReading.close()
         guard process.terminationStatus == 0,
               let text = String(data: data, encoding: .utf8) else {
             return ""

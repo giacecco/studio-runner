@@ -7,6 +7,7 @@ final class Speaker {
     private let relay: SpeechFinishRelay
     private var continuation: CheckedContinuation<Void, Never>?
     private var current: AVSpeechUtterance?
+    private var watchdog: Task<Void, Never>?
 
     init() {
         relay = SpeechFinishRelay()
@@ -30,14 +31,32 @@ final class Speaker {
             continuation = cont
             current = utt
             synth.speak(utt)
+            // Watchdog: if the synthesizer never delivers didFinish or
+            // didCancel (bad internal state, missing voice), the awaiting
+            // utterance pipeline would hold the DAW transport paused
+            // forever. Cap at a generous estimate of the spoken duration.
+            let cap = 30.0 + Double(text.count) * 0.15
+            watchdog = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(cap * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.watchdogFired(for: utt)
+            }
         }
     }
 
     func stop() {
         synth.stopSpeaking(at: .immediate)
         current = nil
+        watchdog?.cancel()
+        watchdog = nil
         continuation?.resume()
         continuation = nil
+    }
+
+    private func watchdogFired(for utt: AVSpeechUtterance) {
+        guard utt === current else { return }
+        NSLog("studio-runner: TTS watchdog fired — synthesizer never finished")
+        stop()
     }
 
     fileprivate func speechDidFinish(_ utt: AVSpeechUtterance) {
@@ -45,6 +64,8 @@ final class Speaker {
         // must not resume the continuation of a newer one.
         guard utt === current else { return }
         current = nil
+        watchdog?.cancel()
+        watchdog = nil
         continuation?.resume()
         continuation = nil
     }
@@ -63,6 +84,14 @@ private final class SpeechFinishRelay: NSObject, AVSpeechSynthesizerDelegate {
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                            didFinish utterance: AVSpeechUtterance) {
-        MainActor.assumeIsolated { speaker?.speechDidFinish(utterance) }
+        // AVSpeechSynthesizer does not document which thread delivers
+        // delegate callbacks; assumeIsolated would trap the whole app if an
+        // OS release moves them off main. Hop explicitly instead.
+        Task { @MainActor [weak speaker] in speaker?.speechDidFinish(utterance) }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                           didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak speaker] in speaker?.speechDidFinish(utterance) }
     }
 }

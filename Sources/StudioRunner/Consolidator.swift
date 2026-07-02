@@ -6,11 +6,12 @@ import Foundation
 actor Consolidator {
     private var pending = false
     private var running = false
-    private let onState: (SessionState) -> Void
+    /// (newState, onlyIfCurrentIn) — empty list = unconditional.
+    private let onState: (SessionState, [SessionState]) -> Void
     private let onLog: (String) -> Void
 
     init(
-        onState: @escaping (SessionState) -> Void,
+        onState: @escaping (SessionState, [SessionState]) -> Void,
         onLog: @escaping (String) -> Void
     ) {
         self.onState = onState
@@ -67,6 +68,15 @@ actor Consolidator {
     """
 
     private func runOne() async {
+        // studiorunner.md transaction: exclusivity must span the AI call,
+        // or a concurrent writer's update lands inside our read→write
+        // window and is silently overwritten.
+        await NotesFile.queue.enqueueAndWait { [weak self] in
+            await self?.runOneExclusively()
+        }
+    }
+
+    private func runOneExclusively() async {
         let snap: MemoStreamSnapshot
         do {
             snap = try MemoStream.read()
@@ -77,8 +87,11 @@ actor Consolidator {
         let unprocessed = snap.unprocessed
         if unprocessed.isEmpty { return }
 
-        onState(.consolidating)
-        defer { onState(.idle) }
+        // Only claim the icon when it's free, and only release it if we
+        // still own it — a press mid-consolidation must not be stomped back
+        // to idle when this pass finishes.
+        onState(.consolidating, [.idle])
+        defer { onState(.idle, [.consolidating]) }
 
         let state = (try? String(contentsOf: Config.notesFile, encoding: .utf8)) ?? ""
         let memos = unprocessed.map { "\($0.body)\n---" }.joined(separator: "\n\n")
@@ -106,11 +119,7 @@ actor Consolidator {
         let toWrite = updated.hasSuffix("\n") ? updated : updated + "\n"
         do {
             try toWrite.write(to: Config.notesFile, atomically: true, encoding: .utf8)
-            // Max, not file-order last: concurrent transcriptions can land in
-            // memos.md out of chronological order, and a watermark older than
-            // an already-consolidated entry would re-include it next pass.
-            let newWatermark = unprocessed.map(\.human).max()!
-            try MemoStream.advanceWatermark(to: newWatermark)
+            try MemoStream.advanceWatermark(covering: unprocessed.map(\.human))
         } catch {
             onLog("consolidate: write failed — \(error)")
             return

@@ -70,7 +70,7 @@ target; the bundle is assembled by hand because SwiftPM doesn't emit
 | `CoreAudioDevice.swift` | Finds a CoreAudio input device by display name and enumerates all available inputs for the settings popup. |
 | `RollingBuffer.swift` | Fixed-size in-memory PCM ring; extraction derives wall-clock window from how many bytes are in the ring. |
 | `MicRecorder.swift` | `AVCaptureSession` on the chosen input device → fresh `AVAudioConverter` per CMSampleBuffer chunk → 16 kHz mono Int16 → append to ring (with gain). Uses AVCaptureSession rather than AVAudioEngine because on macOS Sequoia the AVAudioEngine input tap silently delivers no data without a complete output graph. |
-| `DAWRecorder.swift` | AVAudioEngine on a specific input device (`AudioUnitSetProperty(CurrentDevice)`) → 44.1 kHz stereo Int16 ring. |
+| `DAWRecorder.swift` | AVCaptureSession on the loopback input device (addressed by CoreAudio UID) → stereo Int16 ring at the device's native rate. |
 | `WAVWriter.swift` | Minimal RIFF/WAVE header writer for trimmed clips. |
 | `Whisper.swift` | `Process` invocation of `whisper-cli` (whisper.cpp). |
 | `Screenshot.swift` | `Process` invocation of `screencapture -x`. |
@@ -155,15 +155,17 @@ opened from Finder to switch projects.
   bindings are saved inside the `.studiorunner` project file; the next
   session goes straight to listening. "Re-learn buttons…" in the menu
   clears them and triggers the learn flow again.
-- **AVCaptureSession for mic, AVAudioEngine for DAW.** No `sox`
-  subprocesses, no raw temp files on disk. `MicRecorder` uses
-  `AVCaptureSession` (AVAudioEngine's input tap silently delivers no
-  data on macOS Sequoia without a complete output graph). `DAWRecorder`
-  uses `AVAudioEngine` with `kAudioOutputUnitProperty_CurrentDevice`
-  overridden to BlackHole. Both rings live in memory at fixed capacity.
-  The `AVAudioConverter` inside `MicRecorder` is created fresh per
-  CMSampleBuffer chunk — reusing it causes zero output after the first
-  chunk due to internal SRC state.
+- **AVCaptureSession for both mic and DAW capture.** No `sox`
+  subprocesses, no raw temp files on disk. AVAudioEngine was abandoned
+  for both: its input tap silently delivers no data on macOS Sequoia
+  without a complete output graph, and it exposes non-default input
+  devices with a broken channel map. Each recorder addresses its device
+  directly (the DAW one by CoreAudio UID, typically BlackHole). Both
+  rings live in memory at fixed capacity. The `AVAudioConverter` inside
+  `MicRecorder` is created fresh per CMSampleBuffer chunk — reusing it
+  causes zero output after the first chunk due to internal SRC state —
+  and each chunk is drained with `.endOfStream` so the resampler tail
+  isn't dropped at chunk seams.
 - **In-memory ring buffer with wall-clock-aware extraction.** Same
   insight as the bun script: don't trust spawn-time timestamps — derive
   the wall-clock time of the oldest byte from `now − bytesInRing /
